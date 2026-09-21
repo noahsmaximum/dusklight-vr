@@ -75,6 +75,8 @@ jobs:
     name: Combine bundles
     needs: build
     runs-on: ubuntu-latest
+    permissions:
+      contents: write # create the release on tag pushes
     steps:
       - uses: actions/checkout@v7
 
