@@ -95,7 +95,8 @@ jobs:
         run: |
           shopt -s nullglob
 
-          bundles=(dist/mod-*/*.dusk)
+          # download-artifact extracts a lone matching artifact directly into dist/.
+          bundles=(dist/*.dusk dist/mod-*/*.dusk)
 
           if (( ${#bundles[@]} == 0 )); then
             echo "No .dusk bundles found under dist/"
