@@ -91,10 +91,24 @@ jobs:
           chmod +x symgen
 
       - name: Merge bundles
+        shell: bash
         run: |
-          name=$(basename dist/mod-linux-x86_64/*.dusk)
-          python3 tools/merge_mod.py -o "combined/$name" --symgen ./symgen \
-            dist/*/*.dusk
+          shopt -s nullglob
+
+          bundles=(dist/mod-*/*.dusk)
+
+          if (( ${#bundles[@]} == 0 )); then
+            echo "No .dusk bundles found under dist/"
+            find dist -maxdepth 3 -type f -print || true
+            exit 1
+          fi
+
+          name=$(basename "${bundles[0]}")
+
+          python3 tools/merge_mod.py \
+            -o "combined/$name" \
+            --symgen ./symgen \
+            "${bundles[@]}"
 
       - name: Upload combined bundle
         uses: actions/upload-artifact@v7
