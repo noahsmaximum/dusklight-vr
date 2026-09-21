@@ -1,10 +1,12 @@
-cmake_minimum_required(VERSION 3.26)
+﻿cmake_minimum_required(VERSION 3.26)
 
 if (NOT DEFINED CMAKE_BUILD_TYPE AND NOT DEFINED ENV{CMAKE_BUILD_TYPE})
     set(CMAKE_BUILD_TYPE "RelWithDebInfo" CACHE STRING "Build type")
 endif ()
 
 project(dusklight_vr VERSION 0.1.0 LANGUAGES C CXX)
+# Full version shown in the mod manager (project() only accepts numeric versions).
+set(MOD_VERSION "0.1.0-beta")
 
 if (NOT WIN32)
     message(FATAL_ERROR "Dusklight VR currently supports Windows (D3D12 + OpenXR) only")
