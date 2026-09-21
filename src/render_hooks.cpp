@@ -1,4 +1,4 @@
-﻿// Game headers first: windows.h (pulled in below) defines macros such as IN that collide with game enums.
+// Game headers first: windows.h (pulled in below) defines macros such as IN that collide with game enums.
 #include "JSystem/J3DGraphBase/J3DSys.h"
 #include "d/d_com_inf_game.h"
 #include "f_op/f_op_camera_mng.h"

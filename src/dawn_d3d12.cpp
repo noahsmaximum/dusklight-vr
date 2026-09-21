@@ -1,4 +1,4 @@
-﻿#include "dawn_d3d12.hpp"
+#include "dawn_d3d12.hpp"
 
 #include "mods/svc/log.hpp"
 

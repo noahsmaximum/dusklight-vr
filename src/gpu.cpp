@@ -1,4 +1,4 @@
-﻿#include "gpu.hpp"
+#include "gpu.hpp"
 
 #include "mods/svc/log.hpp"
 

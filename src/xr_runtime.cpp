@@ -1,4 +1,4 @@
-﻿#include "xr_runtime.hpp"
+#include "xr_runtime.hpp"
 
 #include "vr_config.hpp"
 

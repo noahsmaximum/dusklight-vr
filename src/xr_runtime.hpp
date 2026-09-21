@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include "dawn_d3d12.hpp"
 #include "vr_math.hpp"
