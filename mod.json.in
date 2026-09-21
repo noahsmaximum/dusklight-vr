@@ -1,0 +1,7 @@
+{
+  "id": "com.noahsmaximum.dusklight_vr",
+  "name": "Dusklight VR",
+  "version": "@PROJECT_VERSION@",
+  "author": "noahsmaximum",
+  "description": "OpenXR VR for Dusklight: true per-eye stereo, 6DOF head tracking, floating HUD and world-locked menus."
+}
