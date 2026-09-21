@@ -27,9 +27,9 @@ struct MirrorPayload {
 
 // Game thread: queue the desktop mirror draw into the current EFB pass.
 void push_mirror(const MirrorPayload& payload);
-// Game thread: fill the current (offscreen) pass with opaque white.
-void push_fill_white();
-// Game thread: clear colour and depth of the current EFB pass (between eyes).
-void push_clear();
+// Game thread: copy a resolved scene snapshot back into the current EFB pass (opaque).
+void push_restore(WGPUTextureView scene);
+// Game thread: clear colour (black or white) and depth of the current EFB pass.
+void push_clear(bool white = false);
 
 } // namespace vr::gpu

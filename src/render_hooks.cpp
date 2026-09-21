@@ -16,6 +16,7 @@
 #include "mods/svc/hook.hpp"
 #include "mods/svc/log.hpp"
 
+#include <aurora/aurora.h>
 #include <dolphin/gx/GXAurora.h>
 
 #include <array>
@@ -37,6 +38,7 @@ DEFINE_HOOK_SYMBOL("src/m_Do/m_Do_graphic.cpp#motionBlure", void(view_class*), M
 DEFINE_HOOK_SYMBOL("src/m_Do/m_Do_graphic.cpp#drawDepth2", void(view_class*, view_port_class*, int), DrawDepth);
 DEFINE_HOOK_SYMBOL("src/m_Do/m_Do_graphic.cpp#trimming", void(view_class*, view_port_class*), Trimming);
 DEFINE_HOOK_SYMBOL("mDoLib_clipper::setup", void(f32, f32, f32, f32), ClipperSetup);
+DEFINE_HOOK_SYMBOL("aurora::window::get_window_size", AuroraWindowSize(), GetWindowSize);
 
 namespace vr::render {
 namespace {
@@ -50,7 +52,8 @@ struct Frame {
     uint64_t xrId = 0;     // 0 when there is no XR frame (simulation)
     xr::FrameInfo info;    // eye views used to render
     int eye = -1;          // eye currently being painted, -1 outside the stereo loop
-    bool hudOpen = false;  // our offscreen pass for the 2D layer is recording
+    bool hudCapturing = false; // the 2D phase is drawing over our black/white clear
+    WGPUTextureView sceneNoHud = nullptr; // 3D scene saved before the 2D phase
     bool hasCamera = false;
     std::array<WGPUTextureView, 2> scene{};
     std::array<WGPUTextureView, 2> hud{}; // [0] over black, [1] over white
@@ -106,6 +109,36 @@ Placement g_place;
 
 uint64_t g_stereoFrames = 0;
 uint64_t g_monoFrames = 0;
+
+// Internal framebuffer override while a headset session runs (0 = follow the window).
+std::atomic<uint32_t> g_efbWidth{0};
+std::atomic<uint32_t> g_efbHeight{0};
+using RefreshSurfaceFn = bool (*)(bool);
+RefreshSurfaceFn g_refreshSurface = nullptr;
+
+// Frame timing (game thread), exponentially smoothed milliseconds.
+struct Timing {
+    double frameMs = 0, waitMs = 0, painterMs = 0;
+    int64_t lastFrameStart = 0;
+};
+Timing g_timing;
+
+int64_t now_ticks() {
+    LARGE_INTEGER t;
+    QueryPerformanceCounter(&t);
+    return t.QuadPart;
+}
+
+double ticks_to_ms(int64_t ticks) {
+    static const double freq = [] {
+        LARGE_INTEGER f;
+        QueryPerformanceFrequency(&f);
+        return static_cast<double>(f.QuadPart);
+    }();
+    return static_cast<double>(ticks) * 1000.0 / freq;
+}
+
+void smooth(double& avg, double sample) { avg = avg == 0 ? sample : avg + (sample - avg) * 0.05; }
 
 // --- Camera -------------------------------------------------------------------------------------
 
@@ -401,18 +434,64 @@ void apply_game_overrides() {
     mods::log::info("Applied VR overrides: frame interpolation unlimited, vsync off, no letterbox/mirror");
 }
 
+// While a headset session runs, render the game at the headset's eye resolution with the game's
+// native 4:3 aspect instead of following the desktop window (an ultrawide window would otherwise
+// waste most of its pixels once squeezed into a near-square eye image, twice per frame).
+void update_efb_override() {
+    uint32_t w = 0;
+    uint32_t h = 0;
+    if (f.mode == Mode::Stereo && xr::session_running() && xr::eye_height() != 0) {
+        h = xr::eye_height() & ~1u;
+        w = ((h * 4 + 2) / 3) & ~1u;
+    }
+    if (w == g_efbWidth.load() && h == g_efbHeight.load()) {
+        return;
+    }
+    g_efbWidth.store(w);
+    g_efbHeight.store(h);
+    if (g_refreshSurface != nullptr) {
+        g_refreshSurface(false);
+    }
+    if (w != 0) {
+        mods::log::info("Rendering at {}x{} for the headset", w, h);
+    } else {
+        mods::log::info("Rendering at the window resolution again");
+    }
+}
+
+void window_size_post(ModContext*, void*, void* retval, void*) {
+    const uint32_t w = g_efbWidth.load(std::memory_order_relaxed);
+    const uint32_t h = g_efbHeight.load(std::memory_order_relaxed);
+    if (w != 0 && h != 0 && retval != nullptr) {
+        auto* size = static_cast<AuroraWindowSize*>(retval);
+        size->fb_width = w;
+        size->fb_height = h;
+    }
+}
+
 HookAction begin_frame_pre(ModContext*, void*, void*, void*) {
+    const int64_t start = now_ticks();
+    if (g_timing.lastFrameStart != 0) {
+        smooth(g_timing.frameMs, ticks_to_ms(start - g_timing.lastFrameStart));
+    }
+    g_timing.lastFrameStart = start;
+
     refresh_config();
     f = {};
     const auto& cfg = config();
     f.mode = cfg.mode;
+    if (f.mode != Mode::Off) {
+        xr::poll();
+    }
+    update_efb_override();
     if (f.mode == Mode::Off) {
         return HOOK_CONTINUE;
     }
-    xr::poll();
     if (xr::session_running()) {
         apply_game_overrides();
+        const int64_t waitStart = now_ticks();
         f.xrId = xr::wait_frame();
+        smooth(g_timing.waitMs, ticks_to_ms(now_ticks() - waitStart));
     }
     f.active = f.xrId != 0 || (cfg.simulateHmd && f.mode == Mode::Stereo);
     return HOOK_CONTINUE;
@@ -444,15 +523,18 @@ WGPUTextureView resolve_color() {
     return out.color;
 }
 
-void close_hud_pass() {
-    if (!f.hudOpen) {
+// Ends the 2D capture: snapshot the HUD (drawn over black/white) and put the 3D scene back so the
+// rest of the painter (screen fader) draws over the scene as usual.
+void end_hud_capture() {
+    if (!f.hudCapturing) {
         return;
     }
-    f.hudOpen = false;
+    f.hudCapturing = false;
     const WGPUTextureView view = resolve_color();
     if (f.eye == 0 || f.eye == 1) {
         f.hud[f.eye] = view;
     }
+    gpu::push_restore(f.sceneNoHud);
 }
 
 void painter_replace(ModContext*, void*, void* retval, void*) {
@@ -505,6 +587,7 @@ void painter_replace(ModContext*, void*, void* retval, void*) {
         }
     }
 
+    const int64_t paintStart = now_ticks();
     for (int eye = 0; eye < 2; ++eye) {
         f.eye = eye;
         if (eye == 1) {
@@ -516,10 +599,11 @@ void painter_replace(ModContext*, void*, void* retval, void*) {
             apply_eye(cam->view, backup, gameView, eye);
         }
         run();
-        close_hud_pass(); // in case the painter skipped the HUD stage
+        end_hud_capture(); // in case the painter skipped the HUD stage
         f.scene[eye] = resolve_color();
     }
     f.eye = -1;
+    smooth(g_timing.painterMs, ticks_to_ms(now_ticks() - paintStart));
     if (cam != nullptr) {
         restore_view(cam->view, backup);
         j3dSys.setViewMtx(cam->view.viewMtx);
@@ -539,27 +623,25 @@ void painter_replace(ModContext*, void*, void* retval, void*) {
 
 HookAction run_stage_pre(ModContext*, void* args, void*, void*) {
     if (mods::arg<int>(args, 0) == GFX_STAGE_FRAME_AFTER_HUD) {
-        close_hud_pass();
+        end_hud_capture();
     }
     return HOOK_CONTINUE;
 }
 
 void run_stage_post(ModContext*, void* args, void*, void*) {
-    if (mods::arg<int>(args, 0) != GFX_STAGE_FRAME_BEFORE_HUD || f.eye < 0 || f.hudOpen) {
+    if (mods::arg<int>(args, 0) != GFX_STAGE_FRAME_BEFORE_HUD || f.eye < 0 || f.hudCapturing) {
         return;
     }
-    // Everything the painter draws from here to FRAME_AFTER_HUD is 2D (HUD, text, menus). Record it
-    // into its own layer: over black for the first eye and over white for the second, which lets
-    // the compositor recover exact alpha for the headset's quad layer.
-    uint32_t w, h;
-    efb_size(w, h);
-    if (svc_gfx->create_pass(mod_ctx, w, h) != MOD_OK) {
+    // Everything the painter draws from here to FRAME_AFTER_HUD is 2D (HUD, text, menus). Save the
+    // scene, then let the 2D phase draw into the main framebuffer over black (first eye) or white
+    // (second eye); the pair gives the compositor exact alpha for the headset's quad layer. This
+    // stays on the EFB (not an offscreen pass) so the game's 2D viewport scaling applies.
+    f.sceneNoHud = resolve_color();
+    if (f.sceneNoHud == nullptr) {
         return;
     }
-    f.hudOpen = true;
-    if (f.eye == 1) {
-        gpu::push_fill_white();
-    }
+    gpu::push_clear(f.eye == 1);
+    f.hudCapturing = true;
 }
 
 HookAction original_frames_pre(ModContext*, void*, void* retval, void*) {
@@ -673,6 +755,7 @@ bool install() {
     check<DrawDepth>(mods::hook::add_pre<DrawDepth>(depth_of_field_pre), "drawDepth2", false);
     check<Trimming>(mods::hook::add_pre<Trimming>(trimming_pre), "trimming", false);
     check<ClipperSetup>(mods::hook::add_pre<ClipperSetup>(clipper_setup_pre), "mDoLib_clipper::setup", false);
+    check<GetWindowSize>(mods::hook::add_post<GetWindowSize>(window_size_post), "get_window_size", false);
     if (!ok) {
         return false;
     }
@@ -699,6 +782,13 @@ bool install() {
     }
     g_origQueueSubmit = reinterpret_cast<QueueSubmitFn>(orig);
 
+    void* refreshFn = nullptr;
+    if (svc_hook->resolve(mod_ctx, "aurora::webgpu::refresh_surface", &refreshFn, nullptr) == MOD_OK) {
+        g_refreshSurface = reinterpret_cast<RefreshSurfaceFn>(refreshFn);
+    } else {
+        mods::log::warn("could not resolve refresh_surface; headset render resolution follows the window");
+    }
+
     void* overrideFn = nullptr;
     if (svc_hook->resolve(mod_ctx, "dusk::config::load_arg_override", &overrideFn, nullptr) == MOD_OK) {
         g_configOverride = reinterpret_cast<ConfigOverrideFn>(overrideFn);
@@ -709,6 +799,13 @@ bool install() {
 }
 
 void uninstall() {
+    if (g_efbWidth.load() != 0) {
+        g_efbWidth.store(0);
+        g_efbHeight.store(0);
+        if (g_refreshSurface != nullptr) {
+            g_refreshSurface(false);
+        }
+    }
     if (g_origQueueSubmit != nullptr) {
         restore_import(GetModuleHandleW(nullptr), "webgpu_dawn.dll", "wgpuQueueSubmit",
             reinterpret_cast<void*>(g_origQueueSubmit));
@@ -725,7 +822,15 @@ void uninstall() {
 }
 
 std::string status() {
-    return "stereo frames: " + std::to_string(g_stereoFrames) + ", mono frames: " + std::to_string(g_monoFrames);
+    uint32_t w = 0, h = 0;
+    AuroraGetRenderSize(&w, &h);
+    char buf[256];
+    std::snprintf(buf, sizeof(buf),
+        "%.0f fps (%.1f ms) | xrWaitFrame %.1f ms | both eyes %.1f ms | render %ux%u | stereo %llu, mono %llu",
+        g_timing.frameMs > 0 ? 1000.0 / g_timing.frameMs : 0.0, g_timing.frameMs, g_timing.waitMs,
+        g_timing.painterMs, w, h, static_cast<unsigned long long>(g_stereoFrames),
+        static_cast<unsigned long long>(g_monoFrames));
+    return buf;
 }
 
 } // namespace vr::render

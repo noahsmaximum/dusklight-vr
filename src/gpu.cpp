@@ -39,26 +39,27 @@ struct VsOut {
     return vec4f(min(b, vec3f(a)), a);
 }
 
-@fragment fn fs_white(in: VsOut) -> @location(0) vec4f {
-    return vec4f(1.0, 1.0, 1.0, 1.0);
-}
-
 struct ClearOut {
     @location(0) color: vec4f,
     @builtin(frag_depth) depth: f32,
 };
 
-// Resets the EFB between eyes. Reversed-Z puts the far plane at 0.
-@fragment fn fs_clear_rev(in: VsOut) -> ClearOut {
+// Clears the EFB colour and depth (reversed-Z puts the far plane at 0).
+@fragment fn fs_clear_black_rev(in: VsOut) -> ClearOut {
     return ClearOut(vec4f(0.0, 0.0, 0.0, 1.0), 0.0);
 }
-
-@fragment fn fs_clear_std(in: VsOut) -> ClearOut {
+@fragment fn fs_clear_black_std(in: VsOut) -> ClearOut {
     return ClearOut(vec4f(0.0, 0.0, 0.0, 1.0), 1.0);
+}
+@fragment fn fs_clear_white_rev(in: VsOut) -> ClearOut {
+    return ClearOut(vec4f(1.0, 1.0, 1.0, 1.0), 0.0);
+}
+@fragment fn fs_clear_white_std(in: VsOut) -> ClearOut {
+    return ClearOut(vec4f(1.0, 1.0, 1.0, 1.0), 1.0);
 }
 )";
 
-enum class Kind { Blit, Combine, CombineOver, White, ClearRev, ClearStd };
+enum class Kind { Blit, Combine, CombineOver, ClearBlackRev, ClearBlackStd, ClearWhiteRev, ClearWhiteStd };
 
 struct State {
     WGPUDevice device = nullptr;
@@ -73,7 +74,7 @@ struct State {
     std::unordered_map<uint64_t, WGPURenderPipeline> targetPipelines;
     std::unordered_map<uint64_t, WGPURenderPipeline> scenePipelines;
     GfxDrawTypeHandle mirrorDraw = 0;
-    GfxDrawTypeHandle whiteDraw = 0;
+    GfxDrawTypeHandle restoreDraw = 0;
     GfxDrawTypeHandle clearDraw = 0;
 };
 State g;
@@ -94,12 +95,14 @@ const char* entry_for(Kind k) {
     case Kind::Combine:
     case Kind::CombineOver:
         return "fs_combine";
-    case Kind::White:
-        return "fs_white";
-    case Kind::ClearRev:
-        return "fs_clear_rev";
-    case Kind::ClearStd:
-        return "fs_clear_std";
+    case Kind::ClearBlackRev:
+        return "fs_clear_black_rev";
+    case Kind::ClearBlackStd:
+        return "fs_clear_black_std";
+    case Kind::ClearWhiteRev:
+        return "fs_clear_white_rev";
+    case Kind::ClearWhiteStd:
+        return "fs_clear_white_std";
     }
     return "fs_blit";
 }
@@ -114,7 +117,7 @@ WGPURenderPipeline create_pipeline(const WGPUColorTargetState* targets, uint32_t
 
     WGPUDepthStencilState ds = WGPU_DEPTH_STENCIL_STATE_INIT;
     ds.format = depthFormat;
-    const bool clears = kind == Kind::ClearRev || kind == Kind::ClearStd;
+    const bool clears = kind >= Kind::ClearBlackRev;
     ds.depthWriteEnabled = clears ? WGPUOptionalBool_True : WGPUOptionalBool_False;
     ds.depthCompare = WGPUCompareFunction_Always;
 
@@ -232,15 +235,21 @@ void mirror_draw(ModContext*, const GfxDrawContext* ctx, const void* payloadRaw,
     }
 }
 
-void white_draw(ModContext*, const GfxDrawContext* ctx, const void*, size_t, void*) {
-    WGPUBindGroup bg = make_bind_group(nullptr, nullptr);
-    draw_fullscreen(ctx->pass, scene_pipeline(ctx->layout, Kind::White), bg);
+void restore_draw(ModContext*, const GfxDrawContext* ctx, const void* payload, size_t size, void*) {
+    if (size != sizeof(WGPUTextureView)) {
+        return;
+    }
+    WGPUBindGroup bg = make_bind_group(*static_cast<const WGPUTextureView*>(payload), nullptr);
+    draw_fullscreen(ctx->pass, scene_pipeline(ctx->layout, Kind::Blit), bg);
     wgpuBindGroupRelease(bg);
 }
 
-void clear_draw(ModContext*, const GfxDrawContext* ctx, const void*, size_t, void*) {
+void clear_draw(ModContext*, const GfxDrawContext* ctx, const void* payload, size_t size, void*) {
+    const bool white = size == sizeof(bool) && *static_cast<const bool*>(payload);
+    const Kind kind = white ? (ctx->uses_reversed_z ? Kind::ClearWhiteRev : Kind::ClearWhiteStd)
+                            : (ctx->uses_reversed_z ? Kind::ClearBlackRev : Kind::ClearBlackStd);
     WGPUBindGroup bg = make_bind_group(nullptr, nullptr);
-    draw_fullscreen(ctx->pass, scene_pipeline(ctx->layout, ctx->uses_reversed_z ? Kind::ClearRev : Kind::ClearStd), bg);
+    draw_fullscreen(ctx->pass, scene_pipeline(ctx->layout, kind), bg);
     wgpuBindGroupRelease(bg);
 }
 
@@ -294,14 +303,14 @@ bool initialize(WGPUDevice device) {
     GfxDrawTypeDesc mirror = GFX_DRAW_TYPE_DESC_INIT;
     mirror.label = "Dusklight VR mirror";
     mirror.draw = mirror_draw;
-    GfxDrawTypeDesc white = GFX_DRAW_TYPE_DESC_INIT;
-    white.label = "Dusklight VR white";
-    white.draw = white_draw;
+    GfxDrawTypeDesc restore = GFX_DRAW_TYPE_DESC_INIT;
+    restore.label = "Dusklight VR scene restore";
+    restore.draw = restore_draw;
     GfxDrawTypeDesc clear = GFX_DRAW_TYPE_DESC_INIT;
     clear.label = "Dusklight VR eye clear";
     clear.draw = clear_draw;
     if (svc_gfx->register_draw_type(mod_ctx, &mirror, &g.mirrorDraw) != MOD_OK ||
-        svc_gfx->register_draw_type(mod_ctx, &white, &g.whiteDraw) != MOD_OK ||
+        svc_gfx->register_draw_type(mod_ctx, &restore, &g.restoreDraw) != MOD_OK ||
         svc_gfx->register_draw_type(mod_ctx, &clear, &g.clearDraw) != MOD_OK)
     {
         mods::log::error("failed to register VR draw types");
@@ -315,9 +324,9 @@ void shutdown() {
         svc_gfx->unregister_draw_type(mod_ctx, g.mirrorDraw);
         g.mirrorDraw = 0;
     }
-    if (g.whiteDraw != 0) {
-        svc_gfx->unregister_draw_type(mod_ctx, g.whiteDraw);
-        g.whiteDraw = 0;
+    if (g.restoreDraw != 0) {
+        svc_gfx->unregister_draw_type(mod_ctx, g.restoreDraw);
+        g.restoreDraw = 0;
     }
     if (g.clearDraw != 0) {
         svc_gfx->unregister_draw_type(mod_ctx, g.clearDraw);
@@ -372,18 +381,18 @@ void push_mirror(const MirrorPayload& payload) {
     }
 }
 
-void push_fill_white() {
-    if (g.whiteDraw != 0) {
-        svc_gfx->push_draw(mod_ctx, g.whiteDraw, nullptr, 0);
+void push_restore(WGPUTextureView scene) {
+    if (g.restoreDraw != 0 && scene != nullptr) {
+        svc_gfx->push_draw(mod_ctx, g.restoreDraw, &scene, sizeof(scene));
     }
 }
 
 } // namespace vr::gpu
 
 namespace vr::gpu {
-void push_clear() {
+void push_clear(bool white) {
     if (g.clearDraw != 0) {
-        svc_gfx->push_draw(mod_ctx, g.clearDraw, nullptr, 0);
+        svc_gfx->push_draw(mod_ctx, g.clearDraw, &white, sizeof(white));
     }
 }
 } // namespace vr::gpu

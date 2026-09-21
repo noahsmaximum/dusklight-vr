@@ -737,7 +737,8 @@ std::string status() {
     const int s = static_cast<int>(g.sessionState);
     return g.runtimeName + " / " + g.systemName + ": " + (s >= 0 && s <= 8 ? kStates[s] : "?") + ", " +
            std::to_string(g.eyeSwapchains[0].width) + "x" + std::to_string(g.eyeSwapchains[0].height) +
-           " per eye, " + std::to_string(g.framesSubmitted) + " frames";
+           " per eye, " + std::to_string(g.framesSubmitted) + " frames submitted, " +
+           std::to_string(g.framesDiscarded) + " dropped";
 }
 
 void request_recenter() { g.recenterRequested = true; }
