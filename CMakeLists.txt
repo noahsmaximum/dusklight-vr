@@ -12,9 +12,9 @@ if (NOT WIN32 AND NOT ANDROID)
     message(FATAL_ERROR "Dusklight VR supports Windows (D3D12) and Android (Vulkan)")
 endif ()
 
-# The Dusklight version to build against: a release tag (e.g. "v2.0.0") or a commit SHA.
+# The Dusklight version to build against: a release tag (e.g. "v2.0.1") or a commit SHA.
 if (NOT DUSKLIGHT_VERSION)
-    set(DUSKLIGHT_VERSION "v2.0.0")
+    set(DUSKLIGHT_VERSION "v2.0.1")
 endif ()
 include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/FetchDusklight.cmake")
 add_subdirectory("${DUSKLIGHT_DIR}/sdk" dusklight-sdk EXCLUDE_FROM_ALL)
@@ -40,7 +40,7 @@ configure_file(mod.json.in "${CMAKE_CURRENT_BINARY_DIR}/mod.json" @ONLY NEWLINE_
 if (WIN32)
     set(VR_INTEROP_SOURCES src/interop_d3d12.cpp src/dawn_d3d12.cpp src/d3d12_vtbl.c src/iat_hook.cpp)
 elseif (ANDROID)
-    set(VR_INTEROP_SOURCES src/interop_vulkan.cpp)
+    set(VR_INTEROP_SOURCES src/interop_vulkan.cpp src/android_loader.cpp)
 else ()
     message(FATAL_ERROR "Dusklight VR supports Windows (D3D12) and Android (Vulkan)")
 endif ()

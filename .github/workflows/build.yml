@@ -17,10 +17,15 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # VR is Windows-only: OpenXR via Dawn's D3D12 backend.
+          # Windows: OpenXR through Dawn's D3D12 backend.
           - platform: windows-amd64
             runner: windows-latest
             msvc_arch: amd64
+          # Android (Quest/Pico): OpenXR through Dawn's Vulkan backend; needs the VR-edition
+          # Dusklight build at run time (see docs/android.md).
+          - platform: android-aarch64
+            runner: ubuntu-latest
+            android_ndk: "29.0.14206865"
     steps:
       - uses: actions/checkout@v7
 

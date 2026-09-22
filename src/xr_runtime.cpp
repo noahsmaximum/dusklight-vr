@@ -1,13 +1,15 @@
 #include "xr_runtime.hpp"
 
+#ifdef __ANDROID__
+#include "android_loader.hpp"
+#endif
 #include "interop.hpp"
 #include "vr_config.hpp"
 
 #include "mods/svc/log.hpp"
 
-#ifdef _WIN32
-#define XR_USE_PLATFORM_WIN32
-#else
+// Only the Android platform structs are needed here; the graphics bindings live in interop_*.cpp.
+#ifdef __ANDROID__
 #define XR_USE_PLATFORM_ANDROID
 #include <jni.h>
 #endif
@@ -574,6 +576,12 @@ bool initialize(WGPUDevice device, WGPUAdapter adapter, bool createInstance) {
         mods::log::info("OpenXR disabled (DUSKLIGHT_VR_NO_XR); simulation only");
         return true;
     }
+#ifdef __ANDROID__
+    // The loader can only find the runtime once it has the app's Java VM and context.
+    if (!android::initialize_loader()) {
+        return false;
+    }
+#endif
     uint32_t extCount = 0;
     if (XR_FAILED(xrEnumerateInstanceExtensionProperties(nullptr, 0, &extCount, nullptr))) {
         mods::log::warn("No OpenXR runtime installed; VR unavailable");
@@ -600,12 +608,26 @@ bool initialize(WGPUDevice device, WGPUAdapter adapter, bool createInstance) {
     if (hasPassthrough) {
         enabled.push_back(XR_FB_PASSTHROUGH_EXTENSION_NAME);
     }
+#ifdef __ANDROID__
+    // Some runtimes still want the VM/context on the instance itself.
+    XrInstanceCreateInfoAndroidKHR androidInfo{XR_TYPE_INSTANCE_CREATE_INFO_ANDROID_KHR};
+    androidInfo.applicationVM = android::java_vm();
+    androidInfo.applicationActivity = android::application_context();
+    if (offered(XR_KHR_ANDROID_CREATE_INSTANCE_EXTENSION_NAME)) {
+        enabled.push_back(XR_KHR_ANDROID_CREATE_INSTANCE_EXTENSION_NAME);
+    }
+#endif
     XrInstanceCreateInfo ci{XR_TYPE_INSTANCE_CREATE_INFO};
     std::strncpy(ci.applicationInfo.applicationName, "Dusklight VR", XR_MAX_APPLICATION_NAME_SIZE - 1);
     std::strncpy(ci.applicationInfo.engineName, "Dusklight", XR_MAX_ENGINE_NAME_SIZE - 1);
     ci.applicationInfo.apiVersion = XR_API_VERSION_1_0;
     ci.enabledExtensionCount = static_cast<uint32_t>(enabled.size());
     ci.enabledExtensionNames = enabled.data();
+#ifdef __ANDROID__
+    if (offered(XR_KHR_ANDROID_CREATE_INSTANCE_EXTENSION_NAME)) {
+        ci.next = &androidInfo;
+    }
+#endif
     if (!xr_ok(xrCreateInstance(&ci, &g.instance), "xrCreateInstance")) {
         return false;
     }
