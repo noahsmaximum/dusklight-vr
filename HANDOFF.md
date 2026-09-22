@@ -63,6 +63,8 @@ cmake --build build
   PrintWindow. **If Virtual Desktop is connected it starts a real session in the user's headset.**
 - Simulation also runs a one-shot D3D12 readback self-test (logs a centre pixel ~10 s in).
 - Kill `dusklight.exe` before rebuilding (it locks the `.dusk`).
+- `run_test.ps1` sets `DUSKLIGHT_VR_NO_XR=1` so the harness never opens a session in a connected headset;
+  pass `-Headset` to allow it. Ordon Spring (`-Stage "F_SP104,1,0,-1"`) is a good water test spot.
 - Include game headers before anything pulling in `windows.h` (`IN` macro clashes with game enums).
 - Don't write repo files with PowerShell 5 `Set-Content -Encoding utf8`: it adds a BOM and symgen
   rejects `mod.json`.
@@ -109,9 +111,17 @@ How it works (see README "How it works" for the one-line version):
 - **VDXR (Virtual Desktop) reports neither XR_FB_passthrough nor ALPHA_BLEND** (confirmed 2026-09-21), so the
   transparent area is filled with the "Background without passthrough" colour (black / green / magenta)
   for chroma-key passthrough tools.
-- **Water** (all modes): `C_MTXLightPerspective` post-hook rebuilds the screen-space texgen from the eye's
-  asymmetric projection (the game builds it from the symmetric fovy/aspect: "portal" water). The old
-  Aurora fork could only skip those draws. Logs "Corrected a screen-space (water) projection" once.
+- **Water / refraction** (all modes). Three separate causes of the "portal" water:
+  1. `drawDepth2` (the DOF pass) also makes the framebuffer copy the water samples. Never skip it; DOF
+     is turned off through the `game.depthOfFieldMode=0` override instead.
+  2. View-dependent texture matrices are computed before the painter, using the game view:
+     - frame interpolation `callbacks_run` (`calcMaterial` for recorded models)
+     - `dKy_bg_MAxx_proc` for map water (map models are recorded per frame; after it runs, `calcMaterial` + `diff` re-patch the display lists).
+     Both are re-run per eye with `j3dSys` set to the eye view. The camera's `widezoom_correction` callback is skipped during the re-run.
+  3. The effect matrices project with the game FOV. `view_class` fovy/aspect stay the game's during the eye loop, and:
+     - `J3DTexMtx::calcTexMtx` pre/post (modes 3/9) patches effect x Pg^-1 x Pe.
+     - `C_MTXLightPerspective` (direct GX users: particles, rain effects) is rewritten from Pe, except during the re-run.
+  Verified in simulation at Ordon Spring (`--stage F_SP104,1,0,-1`), Stereo and Tabletop.
 
 **Headset test checklist:**
 - The table sits roughly on a real surface. Adjust height/distance, then Recenter.

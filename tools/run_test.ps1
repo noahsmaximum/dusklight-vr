@@ -5,10 +5,13 @@ param(
     [string]$Stage = "F_SP103",
     [string[]]$Cvars = @("mod.com_noahsmaximum_dusklight__vr.simulateHmd=true", "game.enableFrameInterpolation=2"),
     [string]$Shot = "$PSScriptRoot\..\build\shot.png",
-    [switch]$KeepRunning
+    [switch]$KeepRunning,
+    [switch]$Headset
 )
 $root = Resolve-Path "$PSScriptRoot\.."
 $game = Join-Path $root "testgame"
+# Never open a session in a connected headset from the harness (pass -Headset to allow it).
+if ($Headset) { Remove-Item Env:DUSKLIGHT_VR_NO_XR -ErrorAction SilentlyContinue } else { $env:DUSKLIGHT_VR_NO_XR = "1" }
 $iso = "C:\Users\Noah\ROMs\GameCube\Legend of Zelda, The - Twilight Princess (USA) w Linkle.iso"
 Get-Process dusklight -ErrorAction SilentlyContinue | Stop-Process -Force
 $argList = @('--dvd', "`"$iso`"", '--mods', "`"$(Join-Path $root 'build\mods')`"")

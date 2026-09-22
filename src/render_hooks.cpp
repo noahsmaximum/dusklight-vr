@@ -1,4 +1,5 @@
 // Game headers first: windows.h (pulled in below) defines macros such as IN that collide with game enums.
+#include "JSystem/J3DGraphAnimator/J3DModel.h"
 #include "JSystem/J3DGraphBase/J3DSys.h"
 #include "d/d_com_inf_game.h"
 #include "f_op/f_op_camera_mng.h"
@@ -19,11 +20,13 @@
 #include <aurora/aurora.h>
 #include <dolphin/gx/GXAurora.h>
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <cstring>
 #include <mutex>
 #include <string_view>
+#include <vector>
 
 // --- Hook targets ------------------------------------------------------------------------------------
 
@@ -35,7 +38,6 @@ DEFINE_HOOK_SYMBOL("dusk::game_clock::original_frames", float(), OriginalFrames)
 DEFINE_HOOK_SYMBOL("dusk::ImGuiConsole::PreDraw", void(void*), ImguiPreDraw);
 DEFINE_HOOK_SYMBOL("dusk::ImGuiConsole::PostDraw", void(void*), ImguiPostDraw);
 DEFINE_HOOK_SYMBOL("src/m_Do/m_Do_graphic.cpp#motionBlure", void(view_class*), MotionBlur);
-DEFINE_HOOK_SYMBOL("src/m_Do/m_Do_graphic.cpp#drawDepth2", void(view_class*, view_port_class*, int), DrawDepth);
 DEFINE_HOOK_SYMBOL("src/m_Do/m_Do_graphic.cpp#trimming", void(view_class*, view_port_class*), Trimming);
 DEFINE_HOOK_SYMBOL("mDoLib_clipper::setup", void(f32, f32, f32, f32), ClipperSetup);
 DEFINE_HOOK_SYMBOL("aurora::window::get_window_size", AuroraWindowSize(), GetWindowSize);
@@ -49,6 +51,12 @@ DEFINE_HOOK_SYMBOL("dComIfGd_drawXluListSky", void(), DrawXluSky);
 DEFINE_HOOK_SYMBOL("GXSetFog", void(GXFogType, f32, f32, f32, f32, GXColor), SetFog);
 // Screen-space projective texturing (water reflection/refraction) builds its texgen from the view's fovy/aspect.
 DEFINE_HOOK_SYMBOL("C_MTXLightPerspective", void(f32 (*)[4], f32, f32, f32, f32, f32, f32), LightPerspective);
+// Re-run per eye (see run_interp_callbacks); the camera's callback must not touch the eye view.
+DEFINE_HOOK_SYMBOL("src/d/d_camera.cpp#widezoom_correction", void(void*, f32), WidezoomCorrection);
+// Map/BG water materials: projection texgen computed from the game view in the actors' draw.
+DEFINE_HOOK_SYMBOL("dKy_bg_MAxx_proc", void(void*), BgMaterialProc);
+// View-projection texture matrices (J3D modes 3/9): effect matrix x view x model.
+DEFINE_HOOK_SYMBOL("?calcTexMtx@J3DTexMtx@@QEAAXQEAY03$$CBM@Z", void(J3DTexMtx*, const f32 (*)[4]), CalcTexMtx);
 
 namespace vr::render {
 namespace {
@@ -113,6 +121,13 @@ QueueSubmitFn g_origQueueSubmit = nullptr;
 
 ConfigOverrideFn g_configOverride = nullptr;
 bool g_overridesApplied = false;
+
+// Frame interpolation's per-presentation callbacks (J3DModel::calcMaterial for every recorded model).
+using CallbacksRunFn = void (*)();
+CallbacksRunFn g_callbacksRun = nullptr;
+bool g_rerunningCallbacks = false;
+// Models passed to dKy_bg_MAxx_proc by this frame's actor draws (cleared after the painter).
+std::vector<void*> g_bgModels;
 
 // Placement state for the head-following HUD and world-locked menus.
 struct Placement {
@@ -279,11 +294,11 @@ void apply_eye(view_class& v, const ViewBackup& base, const Mtx34& trackingFromW
     const Mtx44f projView = mul(proj, view);
     std::memcpy(v.projViewMtx, projView.m, sizeof(Mtx44));
 
-    // Symmetric bounds of the frustum for systems that only understand fovy/aspect (particles).
-    const float halfV = std::max(fov.tanUp, -fov.tanDown);
-    const float halfH = std::max(fov.tanRight, -fov.tanLeft);
-    v.fovy = 2.0f * std::atan(halfV) * 180.0f / kPi;
-    v.aspect = halfH / halfV;
+    // fovy/aspect stay the game camera's: everything that builds a screen-space projection from
+    // them (projected water, particles) then describes the game projection, and the hooks below
+    // swap that for the eye's real frustum.
+    v.fovy = base.fovy;
+    v.aspect = base.aspect;
     f.eyeProj = proj;
     f.eyeFovy = v.fovy;
     f.eyeAspect = v.aspect;
@@ -549,6 +564,11 @@ void apply_game_overrides() {
     g_configOverride("video.enableVsync", "false");
     g_configOverride("game.enableMirrorMode", "false");
     g_configOverride("game.disableLetterboxing", "1");
+    // Depth of field through the game's own setting: drawDepth2 must still run, because it also
+    // makes the framebuffer copy that water refraction samples (skipping it = "portal" water).
+    if (config().disableDof) {
+        g_configOverride("game.depthOfFieldMode", "0");
+    }
     mods::log::info("Applied VR overrides: frame interpolation unlimited, vsync off, no letterbox/mirror");
 }
 
@@ -635,6 +655,52 @@ void begin_frame_post(ModContext*, void*, void* retval, void*) {
     }
 }
 
+// Frame interpolation recomputes model materials once per presented frame, before the painter, with
+// the game camera's view. Texture matrices that depend on the view (projected water/refraction,
+// environment maps) and view-space lights would then be the game camera's in both eyes, so the
+// screen copy the water samples lands in the wrong place ("portal" water). Recompute them with the
+// eye's view before painting it.
+// The same goes for map water (materials MA10/MA02), which dKy_bg_MAxx_proc sets up in the actors'
+// draw from the game view (its C_MTXLightPerspective is corrected to the eye frustum by the hook).
+void run_interp_callbacks(const view_class& v) {
+    if (g_callbacksRun == nullptr && g_bgModels.empty()) {
+        return;
+    }
+    // dKy_bg_MAxx_proc switches the current draw lists; nothing may be entered elsewhere afterwards.
+    J3DDrawBuffer* opa = j3dSys.getDrawBuffer(J3DSysDrawBuf_Opa);
+    J3DDrawBuffer* xlu = j3dSys.getDrawBuffer(J3DSysDrawBuf_Xlu);
+    j3dSys.setViewMtx(v.viewMtx);
+    g_rerunningCallbacks = true;
+    for (void* model : g_bgModels) {
+        BgMaterialProc::g_orig(model);
+        // Recompute the texture matrices with the eye view and patch them into the display lists.
+        auto* j3dModel = static_cast<J3DModel*>(model);
+        j3dModel->calcMaterial();
+        j3dModel->diff();
+    }
+    if (g_callbacksRun != nullptr) {
+        g_callbacksRun();
+    }
+    g_rerunningCallbacks = false;
+    j3dSys.setDrawBuffer(opa, J3DSysDrawBuf_Opa);
+    j3dSys.setDrawBuffer(xlu, J3DSysDrawBuf_Xlu);
+    j3dSys.setViewMtx(v.viewMtx);
+}
+
+HookAction bg_material_pre(ModContext*, void* args, void*, void*) {
+    if (!g_rerunningCallbacks && config().mode != Mode::Off) {
+        void* model = mods::arg<void*>(args, 0);
+        if (model != nullptr && std::find(g_bgModels.begin(), g_bgModels.end(), model) == g_bgModels.end()) {
+            g_bgModels.push_back(model);
+        }
+    }
+    return HOOK_CONTINUE;
+}
+
+HookAction widezoom_pre(ModContext*, void*, void*, void*) {
+    return g_rerunningCallbacks ? HOOK_SKIP_ORIGINAL : HOOK_CONTINUE;
+}
+
 WGPUTextureView resolve_color() {
     GfxResolveDesc desc = GFX_RESOLVE_DESC_INIT;
     desc.color = true;
@@ -660,6 +726,11 @@ void end_hud_capture() {
 }
 
 void painter_replace(ModContext*, void*, void* retval, void*) {
+    // Recorded by this frame's actor draws; the next frame's draws record them again (and models
+    // can be deleted by the simulation in between).
+    struct ClearBgModels {
+        ~ClearBgModels() { g_bgModels.clear(); }
+    } clearBgModels;
     int result = 1;
     auto run = [&] { result = Painter::g_orig(); };
 
@@ -727,6 +798,7 @@ void painter_replace(ModContext*, void*, void* retval, void*) {
             if (f.tabletop) {
                 f.cut[eye] = cut_params(cam->view);
             }
+            run_interp_callbacks(cam->view);
         }
         run();
         end_hud_capture(); // in case the painter skipped the HUD stage
@@ -803,10 +875,6 @@ HookAction motion_blur_pre(ModContext*, void*, void*, void*) {
     return f.eye >= 0 ? HOOK_SKIP_ORIGINAL : HOOK_CONTINUE;
 }
 
-HookAction depth_of_field_pre(ModContext*, void*, void*, void*) {
-    return f.eye >= 0 && config().disableDof ? HOOK_SKIP_ORIGINAL : HOOK_CONTINUE;
-}
-
 HookAction trimming_pre(ModContext*, void*, void*, void*) {
     return f.active ? HOOK_SKIP_ORIGINAL : HOOK_CONTINUE;
 }
@@ -850,7 +918,9 @@ void light_perspective_post(ModContext*, void* args, void*, void*) {
     // In an eye that symmetric frustum doesn't match the asymmetric one the geometry is drawn with,
     // so the copy lands misregistered and repeats ("portal" water). Rebuild the matrix from the
     // eye's real projection: s*q = scaleS*(P00*x + P02*z) - transS*z, q = -z.
-    if (f.eye < 0 || f.eyeFovy == 0.0f || mods::arg<f32>(args, 1) != f.eyeFovy ||
+    // During the material re-run the result becomes a J3D effect matrix, which calc_tex_mtx_pre
+    // corrects (rewriting it here as well would apply the eye frustum twice).
+    if (f.eye < 0 || g_rerunningCallbacks || f.eyeFovy == 0.0f || mods::arg<f32>(args, 1) != f.eyeFovy ||
         mods::arg<f32>(args, 2) != f.eyeAspect)
     {
         return;
@@ -873,6 +943,48 @@ void light_perspective_post(ModContext*, void* args, void*, void*) {
     if (!logged) {
         logged = true;
         mods::log::info("Corrected a screen-space (water) projection for the eye frustum");
+    }
+}
+
+// J3D view-projection texgens: texMtx = SRT * effect * view * model. The effect matrix (baked into the
+// model, or built from the view's fovy/aspect) projects like the game camera, Pg. For an eye it
+// must project like the eye, Pe: effect' = effect * Pg^-1 * Pe (both acting on view-space xyz).
+Mtx44 g_savedEffect;
+J3DTexMtx* g_effectPatched = nullptr;
+
+HookAction calc_tex_mtx_pre(ModContext*, void* args, void*, void*) {
+    J3DTexMtx* texMtx = mods::arg<J3DTexMtx*>(args, 0);
+    const u32 mode = texMtx->getTexMtxInfo().mInfo & 0x3f;
+    if (f.eye < 0 || f.eyeFovy == 0.0f || (mode != J3DTexMtxMode_ViewProjmapBasic && mode != J3DTexMtxMode_ViewProjmap)) {
+        return HOOK_CONTINUE;
+    }
+    // Pg from the game's fovy/aspect (what C_MTXLightPerspective and the game projection use).
+    const float cot = 1.0f / std::tan(f.eyeFovy * 0.5f * kPi / 180.0f);
+    const float ga = cot / f.eyeAspect, gc = cot;
+    const auto& p = f.eyeProj.m;
+    // C = Pg^-1 * Pe for Pg = [[ga,0,0],[0,gc,0],[0,0,-1]], Pe = [[p00,0,p02],[0,p11,p12],[0,0,-1]].
+    const float c[3][3] = {{p[0][0] / ga, 0.0f, p[0][2] / ga}, {0.0f, p[1][1] / gc, p[1][2] / gc}, {0.0f, 0.0f, 1.0f}};
+    auto& eff = texMtx->getTexMtxInfo().mEffectMtx;
+    std::memcpy(g_savedEffect, eff, sizeof(Mtx44));
+    for (int r = 0; r < 4; ++r) {
+        for (int j = 0; j < 3; ++j) {
+            eff[r][j] = g_savedEffect[r][0] * c[0][j] + g_savedEffect[r][1] * c[1][j] + g_savedEffect[r][2] * c[2][j];
+        }
+    }
+    g_effectPatched = texMtx;
+    return HOOK_CONTINUE;
+}
+
+void calc_tex_mtx_post(ModContext*, void* args, void*, void*) {
+    J3DTexMtx* texMtx = mods::arg<J3DTexMtx*>(args, 0);
+    if (g_effectPatched == texMtx) {
+        std::memcpy(texMtx->getTexMtxInfo().mEffectMtx, g_savedEffect, sizeof(Mtx44));
+        g_effectPatched = nullptr;
+        static bool logged = false;
+        if (!logged) {
+            logged = true;
+            mods::log::info("Corrected a view-projection texture matrix for the eye frustum");
+        }
     }
 }
 
@@ -955,7 +1067,6 @@ bool install() {
     check<ImguiPreDraw>(mods::hook::add_pre<ImguiPreDraw>(skip_on_second_eye), "ImGuiConsole::PreDraw", false);
     check<ImguiPostDraw>(mods::hook::add_pre<ImguiPostDraw>(skip_on_second_eye), "ImGuiConsole::PostDraw", false);
     check<MotionBlur>(mods::hook::add_pre<MotionBlur>(motion_blur_pre), "motionBlure", false);
-    check<DrawDepth>(mods::hook::add_pre<DrawDepth>(depth_of_field_pre), "drawDepth2", false);
     check<Trimming>(mods::hook::add_pre<Trimming>(trimming_pre), "trimming", false);
     check<ClipperSetup>(mods::hook::add_pre<ClipperSetup>(clipper_setup_pre), "mDoLib_clipper::setup", false);
     check<GetWindowSize>(mods::hook::add_post<GetWindowSize>(window_size_post), "get_window_size", false);
@@ -991,6 +1102,21 @@ bool install() {
         return false;
     }
     g_origQueueSubmit = reinterpret_cast<QueueSubmitFn>(orig);
+
+    check<BgMaterialProc>(mods::hook::add_pre<BgMaterialProc>(bg_material_pre), "dKy_bg_MAxx_proc", false);
+    check<CalcTexMtx>(mods::hook::add_pre<CalcTexMtx>(calc_tex_mtx_pre), "J3DTexMtx::calcTexMtx", false);
+    check<CalcTexMtx>(mods::hook::add_post<CalcTexMtx>(calc_tex_mtx_post), "J3DTexMtx::calcTexMtx", false);
+    // Without the widezoom guard the camera's callback would rewrite the eye view, so only use the
+    // per-eye material refresh when both are available.
+    void* callbacksFn = nullptr;
+    if (mods::hook::add_pre<WidezoomCorrection>(widezoom_pre) == MOD_OK &&
+        svc_hook->resolve(mod_ctx, "src/dusk/interp/frame_interpolation.cpp#callbacks_run", &callbacksFn, nullptr) ==
+            MOD_OK)
+    {
+        g_callbacksRun = reinterpret_cast<CallbacksRunFn>(callbacksFn);
+    } else {
+        mods::log::warn("per-eye material refresh unavailable; water may look wrong in stereo");
+    }
 
     void* refreshFn = nullptr;
     if (svc_hook->resolve(mod_ctx, "aurora::webgpu::refresh_surface", &refreshFn, nullptr) == MOD_OK) {
