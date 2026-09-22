@@ -8,7 +8,7 @@ on:
     inputs:
       dusklight_ref:
         description: Dusklight tag or branch to build
-        default: v2.0.0
+        default: v2.0.1
         type: string
 
 env:
@@ -34,7 +34,7 @@ jobs:
           path: dusklight
 
       - name: Apply the VR patch
-        run: mod/android/patch-dusklight.sh dusklight
+        run: bash mod/android/patch-dusklight.sh dusklight
 
       - name: Install dependencies
         run: |

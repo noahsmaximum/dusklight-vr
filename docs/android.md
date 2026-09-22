@@ -28,7 +28,7 @@ so building and sharing our own build is fine.
 ## Building the APK
 
 Run the **Android VR APK** workflow from the Actions tab (input: the Dusklight tag, default
-`v2.0.0`). It mirrors Dusklight's own Android CI, applies the patch, builds the APK, signs it with a
+`v2.0.1`). It mirrors Dusklight's own Android CI, applies the patch, builds the APK, signs it with a
 throwaway key for sideloading, and uploads it as an artifact.
 
 Install it with `adb install -r dusklight-vr-edition-arm64.apk` or SideQuest. It installs alongside
