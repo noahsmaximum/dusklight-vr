@@ -8,7 +8,7 @@ on:
     inputs:
       dusklight_ref:
         description: Dusklight tag or branch to build
-        default: v2.0.0
+        default: v2.0.1
         type: string
 
 env:
