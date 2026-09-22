@@ -9,6 +9,7 @@
 #define XR_USE_PLATFORM_WIN32
 #else
 #define XR_USE_PLATFORM_ANDROID
+#include <jni.h>
 #endif
 
 #include <openxr/openxr.h>

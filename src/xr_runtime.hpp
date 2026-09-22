@@ -1,7 +1,8 @@
 #pragma once
 
-#include "dawn_d3d12.hpp"
 #include "vr_math.hpp"
+
+#include <webgpu/webgpu.h>
 
 #include <cstdint>
 #include <string>

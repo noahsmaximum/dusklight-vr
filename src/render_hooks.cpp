@@ -8,7 +8,9 @@
 #include "render_hooks.hpp"
 
 #include "gpu.hpp"
+#ifdef _WIN32
 #include "iat_hook.hpp"
+#endif
 #include "vr_config.hpp"
 #include "vr_math.hpp"
 #include "xr_runtime.hpp"
@@ -23,6 +25,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -143,10 +146,13 @@ uint64_t g_packetSeq = 0;
 GfxComputeTypeHandle g_beginCompute = 0;
 GfxComputeTypeHandle g_finishCompute = 0;
 
-std::atomic<DWORD> g_workerThread{0};
 std::atomic<bool> g_simulationArmed{false};
+
+#ifdef _WIN32
+std::atomic<DWORD> g_workerThread{0};
 using QueueSubmitFn = void (*)(WGPUQueue, size_t, const WGPUCommandBuffer*);
 QueueSubmitFn g_origQueueSubmit = nullptr;
+#endif
 
 ConfigOverrideFn g_configOverride = nullptr;
 bool g_overridesApplied = false;
@@ -201,18 +207,12 @@ struct Timing {
 Timing g_timing;
 
 int64_t now_ticks() {
-    LARGE_INTEGER t;
-    QueryPerformanceCounter(&t);
-    return t.QuadPart;
+    return std::chrono::steady_clock::now().time_since_epoch().count();
 }
 
 double ticks_to_ms(int64_t ticks) {
-    static const double freq = [] {
-        LARGE_INTEGER f;
-        QueryPerformanceFrequency(&f);
-        return static_cast<double>(f.QuadPart);
-    }();
-    return static_cast<double>(ticks) * 1000.0 / freq;
+    using Period = std::chrono::steady_clock::period;
+    return static_cast<double>(ticks) * 1000.0 * Period::num / Period::den;
 }
 
 void smooth(double& avg, double sample) { avg = avg == 0 ? sample : avg + (sample - avg) * 0.05; }
@@ -583,7 +583,9 @@ void finish_compute(ModContext*, const GfxComputeContext* ctx, const void* paylo
         // RmlUi renders premultiplied (transparent where there is no UI).
         gpu::blit(ctx->encoder, p.ui, uiTarget, p.targetFormat, gpu::BlitMode::KeepAlpha);
     }
+#ifdef _WIN32
     g_workerThread.store(GetCurrentThreadId(), std::memory_order_release);
+#endif
     if (p.xrId != 0) {
         xr::arm_submit(p.xrId, p.stereo, p.seeThrough, p.quads, p.quadTokens);
     } else if (p.stereo) {
@@ -608,12 +610,14 @@ void frame_submitted() {
 void after_submit_post(ModContext*, void*, void*, void*) { frame_submitted(); }
 
 // Fallback (Windows only): observe the exe's wgpuQueueSubmit import.
+#ifdef _WIN32
 void hk_queue_submit(WGPUQueue queue, size_t count, const WGPUCommandBuffer* buffers) {
     g_origQueueSubmit(queue, count, buffers);
     if (GetCurrentThreadId() == g_workerThread.load(std::memory_order_acquire)) {
         frame_submitted();
     }
 }
+#endif
 
 // --- Game-thread hooks ------------------------------------------------------------------------------
 
@@ -1247,6 +1251,7 @@ bool install() {
     } else if (mods::hook::add_post<DepthPeekAfterSubmit>(after_submit_post) == MOD_OK) {
         mods::log::info("Frame delivery: aurora::gfx::depth_peek::after_submit");
     } else {
+#ifdef _WIN32
         void* orig = nullptr;
         if (!patch_import(GetModuleHandleW(nullptr), "webgpu_dawn.dll", "wgpuQueueSubmit",
                 reinterpret_cast<void*>(&hk_queue_submit), &orig))
@@ -1256,6 +1261,10 @@ bool install() {
         }
         g_origQueueSubmit = reinterpret_cast<QueueSubmitFn>(orig);
         mods::log::info("Frame delivery: wgpuQueueSubmit import hook");
+#else
+        mods::log::error("could not observe frame submission; VR frames cannot be delivered");
+        return false;
+#endif
     }
 
     check<BgMaterialProc>(mods::hook::add_pre<BgMaterialProc>(bg_material_pre), "dKy_bg_MAxx_proc", false);
@@ -1306,11 +1315,13 @@ void uninstall() {
             g_refreshSurface(false);
         }
     }
+#ifdef _WIN32
     if (g_origQueueSubmit != nullptr) {
         restore_import(GetModuleHandleW(nullptr), "webgpu_dawn.dll", "wgpuQueueSubmit",
             reinterpret_cast<void*>(g_origQueueSubmit));
         g_origQueueSubmit = nullptr;
     }
+#endif
     if (g_beginCompute != 0) {
         svc_gfx->unregister_compute_type(mod_ctx, g_beginCompute);
         g_beginCompute = 0;

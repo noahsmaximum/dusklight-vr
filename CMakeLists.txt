@@ -8,8 +8,8 @@ project(dusklight_vr VERSION 0.2.0 LANGUAGES C CXX)
 # Full version shown in the mod manager (project() only accepts numeric versions).
 set(MOD_VERSION "0.2.0")
 
-if (NOT WIN32)
-    message(FATAL_ERROR "Dusklight VR currently supports Windows (D3D12 + OpenXR) only")
+if (NOT WIN32 AND NOT ANDROID)
+    message(FATAL_ERROR "Dusklight VR supports Windows (D3D12) and Android (Vulkan)")
 endif ()
 
 # The Dusklight version to build against: a release tag (e.g. "v2.0.0") or a commit SHA.
@@ -61,5 +61,5 @@ if (WIN32)
     target_link_libraries(dusklight_vr PRIVATE OpenXR::openxr_loader d3d12 dxgi)
     target_compile_definitions(dusklight_vr PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
 else ()
-    target_link_libraries(dusklight_vr PRIVATE OpenXR::openxr_loader android nativewindow)
+    target_link_libraries(dusklight_vr PRIVATE OpenXR::openxr_loader android nativewindow vulkan)
 endif ()
