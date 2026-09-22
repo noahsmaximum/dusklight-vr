@@ -23,6 +23,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <mutex>
@@ -33,6 +34,10 @@
 
 DEFINE_HOOK_SYMBOL("aurora_begin_frame", bool(), AuroraBeginFrame);
 DEFINE_HOOK_SYMBOL("aurora_end_frame", void(), AuroraEndFrame);
+// Render worker, right after the frame is submitted (and presented). One-line wrapper; its callee is
+// the fallback in case the wrapper is inlined.
+DEFINE_HOOK_SYMBOL("aurora::gfx::after_submit", void(), AfterSubmit);
+DEFINE_HOOK_SYMBOL("aurora::gfx::depth_peek::after_submit", void(), DepthPeekAfterSubmit);
 DEFINE_HOOK_SYMBOL("mDoGph_Painter", int(), Painter);
 DEFINE_HOOK_SYMBOL("dusk::mods::gfx_run_stage", void(int, const void*, const void*), RunStage);
 DEFINE_HOOK_SYMBOL("dusk::game_clock::original_frames", float(), OriginalFrames);
@@ -586,13 +591,27 @@ void finish_compute(ModContext*, const GfxComputeContext* ctx, const void* paylo
     }
 }
 
+// Runs on the render worker right after the frame's command buffer was submitted: copy the eye/quad
+// targets into the XR swapchains and end the XR frame.
+void frame_submitted() {
+    static bool logged = false;
+    if (!logged) {
+        logged = true;
+        mods::log::info("First frame delivered after submit");
+    }
+    xr::on_queue_submitted();
+    if (g_simulationArmed.exchange(false)) {
+        xr::simulation_readback_once();
+    }
+}
+
+void after_submit_post(ModContext*, void*, void*, void*) { frame_submitted(); }
+
+// Fallback (Windows only): observe the exe's wgpuQueueSubmit import.
 void hk_queue_submit(WGPUQueue queue, size_t count, const WGPUCommandBuffer* buffers) {
     g_origQueueSubmit(queue, count, buffers);
     if (GetCurrentThreadId() == g_workerThread.load(std::memory_order_acquire)) {
-        xr::on_queue_submitted();
-        if (g_simulationArmed.exchange(false)) {
-            xr::simulation_readback_once();
-        }
+        frame_submitted();
     }
 }
 
@@ -1221,14 +1240,23 @@ bool install() {
         return false;
     }
 
-    void* orig = nullptr;
-    if (!patch_import(GetModuleHandleW(nullptr), "webgpu_dawn.dll", "wgpuQueueSubmit",
-            reinterpret_cast<void*>(&hk_queue_submit), &orig))
-    {
-        mods::log::error("could not observe wgpuQueueSubmit; VR frames cannot be delivered");
-        return false;
+    // Frame delivery: Aurora's own post-submit step (works on every platform); the import-table hook
+    // on wgpuQueueSubmit is only a Windows fallback.
+    if (mods::hook::add_post<AfterSubmit>(after_submit_post) == MOD_OK) {
+        mods::log::info("Frame delivery: aurora::gfx::after_submit");
+    } else if (mods::hook::add_post<DepthPeekAfterSubmit>(after_submit_post) == MOD_OK) {
+        mods::log::info("Frame delivery: aurora::gfx::depth_peek::after_submit");
+    } else {
+        void* orig = nullptr;
+        if (!patch_import(GetModuleHandleW(nullptr), "webgpu_dawn.dll", "wgpuQueueSubmit",
+                reinterpret_cast<void*>(&hk_queue_submit), &orig))
+        {
+            mods::log::error("could not observe frame submission; VR frames cannot be delivered");
+            return false;
+        }
+        g_origQueueSubmit = reinterpret_cast<QueueSubmitFn>(orig);
+        mods::log::info("Frame delivery: wgpuQueueSubmit import hook");
     }
-    g_origQueueSubmit = reinterpret_cast<QueueSubmitFn>(orig);
 
     check<BgMaterialProc>(mods::hook::add_pre<BgMaterialProc>(bg_material_pre), "dKy_bg_MAxx_proc", false);
     void* rmlTarget = nullptr;

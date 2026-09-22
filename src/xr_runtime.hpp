@@ -52,7 +52,8 @@ struct FrameInfo {
 // Lifecycle ---------------------------------------------------------------------------------------
 
 // Creates the XrInstance (no headset needed). Returns false if no OpenXR runtime is installed.
-bool initialize(WGPUDevice device, WGPUAdapter adapter);
+// createInstance = false sets up graphics interop only (no OpenXR; for the dev harness).
+bool initialize(WGPUDevice device, WGPUAdapter adapter, bool createInstance = true);
 void shutdown();
 
 // Game thread, once per frame before rendering: pumps events, (re)creates the session when a

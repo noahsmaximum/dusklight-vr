@@ -167,10 +167,9 @@ MOD_EXPORT ModResult mod_initialize(ModError* error) {
         return mods::set_error(error, MOD_ERROR, "failed to hook the renderer (see log)");
     }
     // A missing runtime/headset is not fatal: the mod idles (and "Simulate headset" still works).
-    // DUSKLIGHT_VR_NO_XR (dev harness): never start a headset session, even if one is connected.
-    if (std::getenv("DUSKLIGHT_VR_NO_XR") == nullptr) {
-        vr::xr::initialize(info.device, info.adapter);
-    }
+    // DUSKLIGHT_VR_NO_XR (dev harness): never start a headset session, even if one is connected
+    // (graphics interop is still set up so "Simulate headset" exercises the full copy path).
+    vr::xr::initialize(info.device, info.adapter, std::getenv("DUSKLIGHT_VR_NO_XR") == nullptr);
 
     UiModsPanelDesc panel = UI_MODS_PANEL_DESC_INIT;
     panel.build = build_panel;

@@ -710,7 +710,7 @@ void retire_old_resources() {
 
 // --- Public API ------------------------------------------------------------------------------------
 
-bool initialize(WGPUDevice device, WGPUAdapter adapter) {
+bool initialize(WGPUDevice device, WGPUAdapter adapter, bool createInstance) {
     if (g.instance != XR_NULL_HANDLE) {
         return true;
     }
@@ -726,6 +726,10 @@ bool initialize(WGPUDevice device, WGPUAdapter adapter) {
         return false;
     }
 
+    if (!createInstance) {
+        mods::log::info("OpenXR disabled (DUSKLIGHT_VR_NO_XR); simulation only");
+        return true;
+    }
     uint32_t extCount = 0;
     if (XR_FAILED(xrEnumerateInstanceExtensionProperties(nullptr, 0, &extCount, nullptr))) {
         mods::log::warn("No OpenXR runtime installed; VR unavailable");
