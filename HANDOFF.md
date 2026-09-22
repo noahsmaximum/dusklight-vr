@@ -1,7 +1,7 @@
 # Dusklight VR — handoff
 
 Repo: https://github.com/noahsmaximum/dusklight-vr (local: `C:\Users\Noah\Projects\dusklight-vr`)
-Latest release: **v0.1.0-beta** (prerelease, published by CI on tag push).
+Latest release: **v0.2.0** (published by CI on tag push; tags with a `-` suffix could be marked prerelease by hand).
 
 ## Status
 

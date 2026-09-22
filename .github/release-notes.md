@@ -1,20 +1,21 @@
 ## Install
 
-1. You need **Dusklight v2.0.0** on Windows, using the **D3D12** graphics backend (the default).
-2. Download `dusklight_vr.dusk` below and copy it into `%APPDATA%\TwilitRealm\Dusklight\mods`.
+1. You need **Dusklight v2.0** on Windows, using the **D3D12** graphics backend (the default).
+2. Download `dusklight_vr.dusk` below and copy it into your Dusklight `mods` folder (e.g. `%APPDATA%\TwilitRealm\Dusklight\mods`), replacing any older version.
 3. Start your VR runtime (SteamVR, Virtual Desktop, Quest Link, ...), then launch Dusklight.
-4. Enable **Dusklight VR** in the Mods window. Settings and **Recenter view** are in its panel.
+4. Enable **Dusklight VR** in the Mods window. Pick a **preset** in its panel, then use **Recenter view**.
 
-## What's in this beta
+## What's new in 0.2.0
 
-- Full stereo 3D with head tracking on top of the game camera
-- Level-horizon comfort mode (on by default)
-- HUD floats in front of you and follows your head; pause menus lock in place
-- Cinema mode: play flat on a big virtual screen
-- Frame rate follows your headset; lower **Render scale** if it can't keep up
+- **Tabletop mode**: play on a diorama of the world sitting on your real table, sky removed. Adjustable scale, table height/position/rotation and visible radius
+- Background around the table: see-through where the runtime supports passthrough, otherwise a colour you pick (chroma-key friendly)
+- **Water and reflections fixed** in VR (no more "portal" water)
+- **Presets** for Stereo, Cinema and Tabletop
+- Dusklight's own menus (settings, mod manager) now show on a panel in the headset
 
 ## Known issues
 
-- Dusklight's own settings/mod menus only show on the desktop window
+- Virtual Desktop doesn't offer passthrough to apps; use a chroma-key background colour instead
+- Frosted-glass blur behind Dusklight menus is off while in VR
 - Pause-menu 3D item models look flat
 - Depth of field is off by default; motion blur is always off in VR
