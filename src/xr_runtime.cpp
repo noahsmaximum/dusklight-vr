@@ -1,11 +1,16 @@
 #include "xr_runtime.hpp"
 
+#include "interop.hpp"
 #include "vr_config.hpp"
 
 #include "mods/svc/log.hpp"
 
-#define XR_USE_GRAPHICS_API_D3D12
+#ifdef _WIN32
 #define XR_USE_PLATFORM_WIN32
+#else
+#define XR_USE_PLATFORM_ANDROID
+#endif
+
 #include <openxr/openxr.h>
 #include <openxr/openxr_platform.h>
 
@@ -21,13 +26,13 @@
 namespace vr::xr {
 namespace {
 
-using d3d::ComPtr;
+
 
 struct Swapchain {
     XrSwapchain handle = XR_NULL_HANDLE;
     uint32_t width = 0;
     uint32_t height = 0;
-    std::vector<ID3D12Resource*> images; // runtime-owned
+    std::vector<interop::SwapchainImage> images; // runtime-owned
 };
 
 // The quad (HUD / virtual screen) resources are recreated when the game's framebuffer size
@@ -35,7 +40,7 @@ struct Swapchain {
 // retired sets are only destroyed once those frames have ended.
 struct QuadResources {
     Swapchain swapchain;
-    d3d::CapturedTexture target;
+    interop::Target target;
 };
 
 enum class FrameState : uint8_t { Free, Waited, Begun, Ended };
@@ -57,14 +62,11 @@ struct Armed {
     std::array<QuadResources*, kQuadSlots> quadRes{};
 };
 
-constexpr uint32_t kCopyRing = 3;
 constexpr size_t kRecordRing = 8;
 
 struct State {
     // Graphics
     WGPUDevice device = nullptr;
-    ComPtr<ID3D12Device> d3dDevice;
-    ComPtr<ID3D12CommandQueue> d3dQueue;
     WGPUTextureFormat targetFormat = WGPUTextureFormat_RGBA8Unorm;
     int64_t swapchainFormat = 0;
 
@@ -86,19 +88,9 @@ struct State {
     std::string systemName;
 
     std::array<Swapchain, 2> eyeSwapchains;
-    std::array<d3d::CapturedTexture, 2> eyeTargets;
+    std::array<interop::Target, 2> eyeTargets;
     std::array<QuadResources*, kQuadSlots> quads{};
     std::vector<std::pair<uint64_t, QuadResources*>> retiredQuads;
-
-    // D3D12 copy infrastructure (runs on Dawn's queue so it is ordered after Dawn's frame work).
-    std::array<ComPtr<ID3D12CommandAllocator>, kCopyRing> copyAlloc;
-    std::array<ComPtr<ID3D12GraphicsCommandList>, kCopyRing> copyList;
-    std::array<uint64_t, kCopyRing> copyFenceAt{};
-    uint32_t copySlot = 0;
-    ComPtr<ID3D12Fence> fence;
-    uint64_t fenceValue = 0;
-    HANDLE fenceEvent = nullptr;
-
     // Frame bookkeeping (guarded by frameMutex).
     std::mutex frameMutex;
     std::condition_variable frameCv;
@@ -161,104 +153,16 @@ FrameRecord* find_record(uint64_t id) {
     return r.id == id ? &r : nullptr;
 }
 
-// --- GPU helpers ---------------------------------------------------------------------------------
-
-void gpu_wait_idle() {
-    if (!g.d3dQueue || !g.fence) {
-        return;
-    }
-    const uint64_t v = ++g.fenceValue;
-    g.d3dQueue->Signal(g.fence.Get(), v);
-    if (g.fence->GetCompletedValue() < v) {
-        g.fence->SetEventOnCompletion(v, g.fenceEvent);
-        WaitForSingleObject(g.fenceEvent, 2000);
-    }
-}
-
-bool create_copy_infra() {
-    if (FAILED(g.d3dDevice->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&g.fence)))) {
-        return false;
-    }
-    for (uint32_t i = 0; i < kCopyRing; ++i) {
-        if (FAILED(g.d3dDevice->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&g.copyAlloc[i]))) ||
-            FAILED(g.d3dDevice->CreateCommandList(
-                0, D3D12_COMMAND_LIST_TYPE_DIRECT, g.copyAlloc[i].Get(), nullptr, IID_PPV_ARGS(&g.copyList[i]))))
-        {
-            return false;
-        }
-        g.copyList[i]->Close();
-    }
-    g.fenceEvent = CreateEventW(nullptr, FALSE, FALSE, nullptr);
-    g.copyFenceAt = {};
-    return true;
-}
-
-void destroy_copy_infra() {
-    gpu_wait_idle();
-    for (auto& l : g.copyList) {
-        l.Reset();
-    }
-    for (auto& a : g.copyAlloc) {
-        a.Reset();
-    }
-    g.fence.Reset();
-    if (g.fenceEvent != nullptr) {
-        CloseHandle(g.fenceEvent);
-        g.fenceEvent = nullptr;
-    }
-}
-
-void transition_source(ID3D12GraphicsCommandList* list, const d3d::CapturedTexture& t, bool toCopy) {
-    if (t.barriers == d3d::BarrierModel::Enhanced) {
-        ComPtr<ID3D12GraphicsCommandList7> list7;
-        if (FAILED(list->QueryInterface(IID_PPV_ARGS(&list7)))) {
-            return;
-        }
-        D3D12_TEXTURE_BARRIER b{};
-        b.SyncBefore = toCopy ? D3D12_BARRIER_SYNC_ALL : D3D12_BARRIER_SYNC_COPY;
-        b.SyncAfter = toCopy ? D3D12_BARRIER_SYNC_COPY : D3D12_BARRIER_SYNC_ALL;
-        b.AccessBefore = toCopy ? D3D12_BARRIER_ACCESS_RENDER_TARGET : D3D12_BARRIER_ACCESS_COPY_SOURCE;
-        b.AccessAfter = toCopy ? D3D12_BARRIER_ACCESS_COPY_SOURCE : D3D12_BARRIER_ACCESS_RENDER_TARGET;
-        b.LayoutBefore = toCopy ? D3D12_BARRIER_LAYOUT_RENDER_TARGET : D3D12_BARRIER_LAYOUT_COPY_SOURCE;
-        b.LayoutAfter = toCopy ? D3D12_BARRIER_LAYOUT_COPY_SOURCE : D3D12_BARRIER_LAYOUT_RENDER_TARGET;
-        b.pResource = t.resource.Get();
-        b.Subresources.IndexOrFirstMipLevel = 0xffffffff;
-        D3D12_BARRIER_GROUP group{};
-        group.Type = D3D12_BARRIER_TYPE_TEXTURE;
-        group.NumBarriers = 1;
-        group.pTextureBarriers = &b;
-        list7->Barrier(1, &group);
-        return;
-    }
-    // Dawn leaves the target in RENDER_TARGET after our composition pass (and still believes it is
-    // there), so we round-trip it through COPY_SOURCE.
-    D3D12_RESOURCE_BARRIER b{};
-    b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-    b.Transition.pResource = t.resource.Get();
-    b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-    b.Transition.StateBefore = toCopy ? D3D12_RESOURCE_STATE_RENDER_TARGET : D3D12_RESOURCE_STATE_COPY_SOURCE;
-    b.Transition.StateAfter = toCopy ? D3D12_RESOURCE_STATE_COPY_SOURCE : D3D12_RESOURCE_STATE_RENDER_TARGET;
-    list->ResourceBarrier(1, &b);
-}
-
-void transition_image(ID3D12GraphicsCommandList* list, ID3D12Resource* image, bool toCopy) {
-    D3D12_RESOURCE_BARRIER b{};
-    b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-    b.Transition.pResource = image;
-    b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-    b.Transition.StateBefore = toCopy ? D3D12_RESOURCE_STATE_RENDER_TARGET : D3D12_RESOURCE_STATE_COPY_DEST;
-    b.Transition.StateAfter = toCopy ? D3D12_RESOURCE_STATE_COPY_DEST : D3D12_RESOURCE_STATE_RENDER_TARGET;
-    list->ResourceBarrier(1, &b);
-}
+// --- Swapchain copies ----------------------------------------------------------------------------
 
 struct CopyJob {
     Swapchain* swapchain;
-    const d3d::CapturedTexture* source;
+    const interop::Target* source;
     uint32_t imageIndex = 0;
 };
 
-// Acquire each destination image, copy our targets into them on Dawn's queue, release. Never
-// blocks the CPU on the GPU except when reusing a ring slot that is still in flight.
+// Acquire each destination image, copy our targets into them (the interop layer orders this after
+// Dawn's frame work), release. Never blocks the CPU on the GPU except when a copy slot is reused.
 bool copy_into_swapchains(std::vector<CopyJob>& jobs) {
     for (auto& job : jobs) {
         XrSwapchainImageAcquireInfo acq{XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO};
@@ -272,32 +176,13 @@ bool copy_into_swapchains(std::vector<CopyJob>& jobs) {
         }
     }
 
-    const uint32_t slot = g.copySlot;
-    g.copySlot = (slot + 1) % kCopyRing;
-    if (g.fence->GetCompletedValue() < g.copyFenceAt[slot]) {
-        g.fence->SetEventOnCompletion(g.copyFenceAt[slot], g.fenceEvent);
-        WaitForSingleObject(g.fenceEvent, 1000);
+    std::vector<interop::CopyJob> copies;
+    copies.reserve(jobs.size());
+    for (const auto& job : jobs) {
+        copies.push_back({job.source, job.swapchain->images[job.imageIndex]});
     }
-    ID3D12CommandAllocator* alloc = g.copyAlloc[slot].Get();
-    ID3D12GraphicsCommandList* list = g.copyList[slot].Get();
-    alloc->Reset();
-    list->Reset(alloc, nullptr);
-    for (auto& job : jobs) {
-        ID3D12Resource* dst = job.swapchain->images[job.imageIndex];
-        transition_source(list, *job.source, true);
-        transition_image(list, dst, true);
-        list->CopyResource(dst, job.source->resource.Get());
-        transition_image(list, dst, false);
-        transition_source(list, *job.source, false);
-    }
-    list->Close();
-    ID3D12CommandList* lists[] = {list};
-    g.d3dQueue->ExecuteCommandLists(1, lists);
-    const uint64_t v = ++g.fenceValue;
-    g.d3dQueue->Signal(g.fence.Get(), v);
-    g.copyFenceAt[slot] = v;
+    bool ok = interop::copy_to_swapchains(copies);
 
-    bool ok = true;
     for (auto& job : jobs) {
         XrSwapchainImageReleaseInfo rel{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
         ok = xr_ok(xrReleaseSwapchainImage(job.swapchain->handle, &rel), "xrReleaseSwapchainImage") && ok;
@@ -314,25 +199,13 @@ bool pick_swapchain_format() {
     }
     std::vector<int64_t> formats(count);
     xrEnumerateSwapchainFormats(g.session, count, &count, formats.data());
-    // Dusklight renders gamma-encoded colour into UNORM targets, so an *_SRGB swapchain (fed the
-    // same bytes) is what makes the runtime display it at the right brightness.
-    struct Candidate {
-        int64_t dxgi;
-        WGPUTextureFormat wgpu;
-    };
-    constexpr Candidate kCandidates[] = {
-        {DXGI_FORMAT_R8G8B8A8_UNORM_SRGB, WGPUTextureFormat_RGBA8Unorm},
-        {DXGI_FORMAT_B8G8R8A8_UNORM_SRGB, WGPUTextureFormat_BGRA8Unorm},
-        {DXGI_FORMAT_R8G8B8A8_UNORM, WGPUTextureFormat_RGBA8Unorm},
-        {DXGI_FORMAT_B8G8R8A8_UNORM, WGPUTextureFormat_BGRA8Unorm},
-    };
-    // Runtime order is its preference; take the first one we can feed.
+    // Runtime order is its preference; take the first one the interop layer can feed.
     for (int64_t f : formats) {
-        for (const auto& c : kCandidates) {
-            if (c.dxgi == f) {
+        for (const auto& c : interop::candidate_formats()) {
+            if (c.native == f) {
                 g.swapchainFormat = f;
                 g.targetFormat = c.wgpu;
-                mods::log::info("OpenXR swapchain format: DXGI {}", f);
+                mods::log::info("OpenXR swapchain format: {} ({})", f, interop::backend_name());
                 return true;
             }
         }
@@ -354,18 +227,9 @@ bool create_swapchain(Swapchain& sc, uint32_t width, uint32_t height) {
     if (!xr_ok(xrCreateSwapchain(g.session, &ci, &sc.handle), "xrCreateSwapchain")) {
         return false;
     }
-    uint32_t count = 0;
-    xrEnumerateSwapchainImages(sc.handle, 0, &count, nullptr);
-    std::vector<XrSwapchainImageD3D12KHR> images(count, {XR_TYPE_SWAPCHAIN_IMAGE_D3D12_KHR});
-    if (!xr_ok(xrEnumerateSwapchainImages(
-                   sc.handle, count, &count, reinterpret_cast<XrSwapchainImageBaseHeader*>(images.data())),
-            "xrEnumerateSwapchainImages"))
-    {
+    if (!interop::enumerate_swapchain_images(reinterpret_cast<uint64_t>(sc.handle), sc.images)) {
+        mods::log::error("OpenXR xrEnumerateSwapchainImages failed");
         return false;
-    }
-    sc.images.clear();
-    for (auto& img : images) {
-        sc.images.push_back(img.texture);
     }
     sc.width = width;
     sc.height = height;
@@ -384,7 +248,7 @@ void destroy_quad(QuadResources* q) {
         return;
     }
     destroy_swapchain(q->swapchain);
-    q->target.reset();
+    interop::destroy_target(q->target);
     delete q;
 }
 
@@ -517,7 +381,7 @@ void teardown_session() {
             g.sessionRunning = false;
         }
     }
-    gpu_wait_idle();
+    interop::wait_idle();
     destroy_passthrough();
     g.passthroughFailed = false;
     g.hasAlphaBlend = false;
@@ -525,7 +389,7 @@ void teardown_session() {
         destroy_swapchain(sc);
     }
     for (auto& t : g.eyeTargets) {
-        t.reset();
+        interop::destroy_target(t);
     }
     for (auto*& q : g.quads) {
         destroy_quad(q);
@@ -545,7 +409,7 @@ void teardown_session() {
             *s = XR_NULL_HANDLE;
         }
     }
-    destroy_copy_infra();
+
     if (g.session != XR_NULL_HANDLE) {
         xrDestroySession(g.session);
         g.session = XR_NULL_HANDLE;
@@ -572,24 +436,12 @@ bool create_session() {
         g.systemName = props.systemName;
     }
 
-    PFN_xrGetD3D12GraphicsRequirementsKHR getReqs = nullptr;
-    xrGetInstanceProcAddr(
-        g.instance, "xrGetD3D12GraphicsRequirementsKHR", reinterpret_cast<PFN_xrVoidFunction*>(&getReqs));
-    XrGraphicsRequirementsD3D12KHR reqs{XR_TYPE_GRAPHICS_REQUIREMENTS_D3D12_KHR};
-    if (getReqs == nullptr || !xr_ok(getReqs(g.instance, g.system, &reqs), "xrGetD3D12GraphicsRequirementsKHR")) {
+    const void* graphicsBinding = nullptr;
+    if (!interop::prepare_system(reinterpret_cast<uintptr_t>(g.instance), g.system, graphicsBinding)) {
         return false;
     }
-    const LUID luid = g.d3dDevice->GetAdapterLuid();
-    if (luid.HighPart != reqs.adapterLuid.HighPart || luid.LowPart != reqs.adapterLuid.LowPart) {
-        mods::log::warn("Dusklight renders on a different GPU than the headset expects; performance may suffer");
-    }
-
-    XrGraphicsBindingD3D12KHR binding{XR_TYPE_GRAPHICS_BINDING_D3D12_KHR};
-    binding.device = g.d3dDevice.Get();
-    binding.queue = g.d3dQueue.Get();
     XrSessionCreateInfo ci{XR_TYPE_SESSION_CREATE_INFO};
-    ci.next = &binding;
-    ci.systemId = g.system;
+    ci.next = graphicsBinding;
     if (!xr_ok(xrCreateSession(g.instance, &ci, &g.session), "xrCreateSession")) {
         return false;
     }
@@ -610,7 +462,7 @@ bool create_session() {
     std::vector<XrViewConfigurationView> views(viewCount, {XR_TYPE_VIEW_CONFIGURATION_VIEW});
     xrEnumerateViewConfigurationViews(
         g.instance, g.system, XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO, viewCount, &viewCount, views.data());
-    if (viewCount < 2 || !pick_swapchain_format() || !create_copy_infra()) {
+    if (viewCount < 2 || !pick_swapchain_format()) {
         teardown_session();
         return false;
     }
@@ -632,9 +484,7 @@ bool create_session() {
         const uint32_t h = std::clamp(static_cast<uint32_t>(v.recommendedImageRectHeight * scale), 64u,
             v.maxImageRectHeight);
         if (!create_swapchain(g.eyeSwapchains[eye], w, h) ||
-            !d3d::create_captured_texture(
-                g.device, g.d3dDevice.Get(), w, h, g.targetFormat, eye == 0 ? "VR eye L" : "VR eye R",
-                g.eyeTargets[eye]))
+            !interop::create_target(w, h, g.targetFormat, eye == 0 ? "VR eye L" : "VR eye R", g.eyeTargets[eye]))
         {
             teardown_session();
             return false;
@@ -692,7 +542,7 @@ void retire_old_resources() {
     }
     std::erase_if(g.retiredQuads, [&](const auto& entry) {
         if (entry.first < oldestOpen) {
-            gpu_wait_idle();
+            interop::wait_idle();
             destroy_quad(entry.second);
             return true;
         }
@@ -714,17 +564,10 @@ bool initialize(WGPUDevice device, WGPUAdapter adapter, bool createInstance) {
     if (g.instance != XR_NULL_HANDLE) {
         return true;
     }
-    if (!d3d::is_d3d12_backend(adapter)) {
-        mods::log::error("VR needs Dusklight's D3D12 graphics backend (Settings > Graphics > Backend)");
+    if (!interop::initialize(device, adapter)) {
         return false;
     }
     g.device = device;
-    g.d3dDevice = d3d::device_of(device);
-    g.d3dQueue = d3d::queue_of(device);
-    if (!g.d3dDevice || !g.d3dQueue) {
-        mods::log::error("could not reach Dawn's D3D12 device");
-        return false;
-    }
 
     if (!createInstance) {
         mods::log::info("OpenXR disabled (DUSKLIGHT_VR_NO_XR); simulation only");
@@ -737,17 +580,22 @@ bool initialize(WGPUDevice device, WGPUAdapter adapter, bool createInstance) {
     }
     std::vector<XrExtensionProperties> exts(extCount, {XR_TYPE_EXTENSION_PROPERTIES});
     xrEnumerateInstanceExtensionProperties(nullptr, extCount, &extCount, exts.data());
-    const bool hasD3D12 = std::ranges::any_of(exts, [](const XrExtensionProperties& e) {
-        return std::strcmp(e.extensionName, XR_KHR_D3D12_ENABLE_EXTENSION_NAME) == 0;
-    });
-    if (!hasD3D12) {
-        mods::log::error("The active OpenXR runtime does not support D3D12");
-        return false;
+    const auto offered = [&exts](const char* name) {
+        return std::ranges::any_of(
+            exts, [name](const XrExtensionProperties& e) { return std::strcmp(e.extensionName, name) == 0; });
+    };
+    uint32_t requiredCount = 0;
+    const char* const* required = interop::required_extensions(requiredCount);
+    std::vector<const char*> enabled;
+    for (uint32_t i = 0; i < requiredCount; ++i) {
+        if (!offered(required[i])) {
+            mods::log::error("The active OpenXR runtime does not support {} ({} backend)", required[i],
+                interop::backend_name());
+            return false;
+        }
+        enabled.push_back(required[i]);
     }
-    const bool hasPassthrough = std::ranges::any_of(exts, [](const XrExtensionProperties& e) {
-        return std::strcmp(e.extensionName, XR_FB_PASSTHROUGH_EXTENSION_NAME) == 0;
-    });
-    std::vector<const char*> enabled{XR_KHR_D3D12_ENABLE_EXTENSION_NAME};
+    const bool hasPassthrough = offered(XR_FB_PASSTHROUGH_EXTENSION_NAME);
     if (hasPassthrough) {
         enabled.push_back(XR_FB_PASSTHROUGH_EXTENSION_NAME);
     }
@@ -786,8 +634,7 @@ void shutdown() {
     teardown_session();
     xrDestroyInstance(g.instance);
     g.instance = XR_NULL_HANDLE;
-    g.d3dQueue.Reset();
-    g.d3dDevice.Reset();
+    interop::shutdown();
 }
 
 void poll() {
@@ -1118,7 +965,7 @@ WGPUTextureView ensure_quad_target(int slot, uint32_t width, uint32_t height) {
     }
     auto* q = new QuadResources();
     if (!create_swapchain(q->swapchain, width, height) ||
-        !d3d::create_captured_texture(g.device, g.d3dDevice.Get(), width, height, g.targetFormat,
+        !interop::create_target(width, height, g.targetFormat,
             slot == kQuadUi ? "VR UI quad" : "VR quad", q->target))
     {
         destroy_quad(q);
@@ -1134,78 +981,32 @@ void* quad_token(int slot) { return slot >= 0 && slot < kQuadSlots ? g.quads[slo
 void simulation_readback_once() {
     // Sample well after the scene has faded in (the first stereo frames are a black load screen).
     static int frames = 0;
-    if (++frames != 1200 || !g.eyeTargets[0] || !g.d3dDevice) {
+    if (++frames != 1200 || !g.eyeTargets[0]) {
         return;
     }
-    if (!g.fence && !create_copy_infra()) {
-        return;
-    }
-    // Same path as a real frame: barrier the captured Dawn resource to COPY_SOURCE on Dawn's queue
-    // right after Dawn's submit, copy, and barrier back. The destination is a readback buffer here.
-    const auto& src = g.eyeTargets[0];
-    D3D12_RESOURCE_DESC desc = src.resource->GetDesc();
-    D3D12_PLACED_SUBRESOURCE_FOOTPRINT fp{};
-    UINT64 total = 0;
-    g.d3dDevice->GetCopyableFootprints(&desc, 0, 1, 0, &fp, nullptr, nullptr, &total);
-    D3D12_HEAP_PROPERTIES heap{D3D12_HEAP_TYPE_READBACK};
-    D3D12_RESOURCE_DESC bd{};
-    bd.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-    bd.Width = total;
-    bd.Height = 1;
-    bd.DepthOrArraySize = 1;
-    bd.MipLevels = 1;
-    bd.SampleDesc.Count = 1;
-    bd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
-    ComPtr<ID3D12Resource> buffer;
-    if (FAILED(g.d3dDevice->CreateCommittedResource(
-            &heap, D3D12_HEAP_FLAG_NONE, &bd, D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&buffer))))
-    {
-        return;
-    }
-    ID3D12CommandAllocator* alloc = g.copyAlloc[0].Get();
-    ID3D12GraphicsCommandList* list = g.copyList[0].Get();
-    alloc->Reset();
-    list->Reset(alloc, nullptr);
-    transition_source(list, src, true);
-    D3D12_TEXTURE_COPY_LOCATION dst{buffer.Get(), D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT};
-    dst.PlacedFootprint = fp;
-    D3D12_TEXTURE_COPY_LOCATION srcLoc{src.resource.Get(), D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX};
-    srcLoc.SubresourceIndex = 0;
-    list->CopyTextureRegion(&dst, 0, 0, 0, &srcLoc, nullptr);
-    transition_source(list, src, false);
-    list->Close();
-    ID3D12CommandList* lists[] = {list};
-    g.d3dQueue->ExecuteCommandLists(1, lists);
-    gpu_wait_idle();
-    uint8_t* data = nullptr;
-    D3D12_RANGE range{0, static_cast<SIZE_T>(total)};
-    if (SUCCEEDED(buffer->Map(0, &range, reinterpret_cast<void**>(&data)))) {
-        const uint8_t* px = data + fp.Offset + (src.height / 2) * fp.Footprint.RowPitch + (src.width / 2) * 4;
-        mods::log::info("D3D12 copy self-test: centre pixel of left eye = {},{},{},{}", int{px[0]}, int{px[1]},
-            int{px[2]}, int{px[3]});
+    uint8_t px[4] = {};
+    if (interop::read_center_pixel(g.eyeTargets[0], px)) {
+        mods::log::info("Copy self-test: centre pixel of left eye = {},{},{},{}", int{px[0]}, int{px[1]}, int{px[2]},
+            int{px[3]});
         std::fflush(stdout);
-        D3D12_RANGE none{0, 0};
-        buffer->Unmap(0, &none);
     }
 }
 
 bool ensure_simulation_targets(uint32_t width, uint32_t height) {
-    if (g.session != XR_NULL_HANDLE || !g.d3dDevice) {
+    if (g.session != XR_NULL_HANDLE || g.device == nullptr) {
         return false;
     }
     if (g.eyeTargets[0] && g.eyeTargets[0].width == width && g.eyeTargets[0].height == height) {
         return true;
     }
     for (int eye = 0; eye < 2; ++eye) {
-        if (!d3d::create_captured_texture(g.device, g.d3dDevice.Get(), width, height, g.targetFormat,
+        if (!interop::create_target(width, height, g.targetFormat,
                 eye == 0 ? "VR sim eye L" : "VR sim eye R", g.eyeTargets[eye]))
         {
             return false;
         }
     }
-    mods::log::info("Simulation eye targets {}x{} captured (D3D12 resource {}, barrier model {})", width, height,
-        static_cast<void*>(g.eyeTargets[0].resource.Get()),
-        g.eyeTargets[0].barriers == d3d::BarrierModel::Enhanced ? "enhanced" : "legacy");
+    mods::log::info("Simulation eye targets {}x{} ready ({} interop)", width, height, interop::backend_name());
     return true;
 }
 

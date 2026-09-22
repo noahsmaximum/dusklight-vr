@@ -36,6 +36,15 @@ FetchContent_MakeAvailable(OpenXR)
 
 configure_file(mod.json.in "${CMAKE_CURRENT_BINARY_DIR}/mod.json" @ONLY NEWLINE_STYLE LF)
 
+# Platform graphics interop: D3D12 on Windows, Vulkan (shared AHardwareBuffers) on Android.
+if (WIN32)
+    set(VR_INTEROP_SOURCES src/interop_d3d12.cpp src/dawn_d3d12.cpp src/d3d12_vtbl.c src/iat_hook.cpp)
+elseif (ANDROID)
+    set(VR_INTEROP_SOURCES src/interop_vulkan.cpp)
+else ()
+    message(FATAL_ERROR "Dusklight VR supports Windows (D3D12) and Android (Vulkan)")
+endif ()
+
 add_mod(dusklight_vr
         FEATURES game fmt webgpu
         SOURCES
@@ -43,12 +52,14 @@ add_mod(dusklight_vr
         src/vr_config.cpp
         src/render_hooks.cpp
         src/xr_runtime.cpp
-        src/dawn_d3d12.cpp
-        src/d3d12_vtbl.c
-        src/iat_hook.cpp
         src/gpu.cpp
+        ${VR_INTEROP_SOURCES}
         MOD_JSON "${CMAKE_CURRENT_BINARY_DIR}/mod.json"
         RES_DIR res
 )
-target_link_libraries(dusklight_vr PRIVATE OpenXR::openxr_loader d3d12 dxgi)
-target_compile_definitions(dusklight_vr PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
+if (WIN32)
+    target_link_libraries(dusklight_vr PRIVATE OpenXR::openxr_loader d3d12 dxgi)
+    target_compile_definitions(dusklight_vr PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
+else ()
+    target_link_libraries(dusklight_vr PRIVATE OpenXR::openxr_loader android nativewindow)
+endif ()
