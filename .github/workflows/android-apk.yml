@@ -34,7 +34,7 @@ jobs:
           path: dusklight
 
       - name: Apply the VR patch
-        run: mod/android/patch-dusklight.sh dusklight
+        run: bash mod/android/patch-dusklight.sh dusklight
 
       - name: Install dependencies
         run: |
