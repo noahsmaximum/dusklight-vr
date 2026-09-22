@@ -111,3 +111,18 @@ PY
 fi
 
 echo "Dusklight VR edition patch applied."
+
+# --- 3. Separate app identity -------------------------------------------------------------------
+# Own package name and label so the VR edition installs alongside the official app instead of
+# replacing it (different signing key => Android would demand an uninstall, losing save data).
+
+gradle="$root/platforms/android/app/build.gradle"
+strings="$root/platforms/android/app/src/main/res/values/strings.xml"
+if grep -q "dev.twilitrealm.dusk.vr" "$gradle"; then
+    echo "identity: already patched"
+else
+    sed -i "s|applicationId: 'dev.twilitrealm.dusk',|applicationId: 'dev.twilitrealm.dusk.vr',|" "$gradle"
+    sed -i 's|<string name="app_name">Dusklight</string>|<string name="app_name">Dusklight VR</string>|' "$strings"
+    grep -q "dev.twilitrealm.dusk.vr" "$gradle" || { echo "identity: applicationId not found" >&2; exit 1; }
+    echo "identity: patched (dev.twilitrealm.dusk.vr)"
+fi
