@@ -52,6 +52,7 @@ struct FrameRecord {
 struct Armed {
     uint64_t id = 0;
     bool stereo = false;
+    bool seeThrough = false;
     QuadLayer quad;
     QuadResources* quadRes = nullptr;
 };
@@ -105,6 +106,19 @@ struct State {
     uint64_t nextId = 1;
     uint64_t lastWaited = 0;
     Armed armed;
+
+    // See-through (tabletop): XR_FB_passthrough layer if the runtime has it, else the ALPHA_BLEND
+    // environment blend mode, else opaque.
+    bool hasFbPassthrough = false; // extension enabled on the instance
+    bool hasAlphaBlend = false;    // session's system lists ALPHA_BLEND
+    bool wantSeeThrough = false;   // game thread
+    bool passthroughFailed = false;
+    PFN_xrCreatePassthroughFB createPassthrough = nullptr;
+    PFN_xrDestroyPassthroughFB destroyPassthrough = nullptr;
+    PFN_xrCreatePassthroughLayerFB createPassthroughLayer = nullptr;
+    PFN_xrDestroyPassthroughLayerFB destroyPassthroughLayer = nullptr;
+    XrPassthroughFB passthrough = XR_NULL_HANDLE;
+    XrPassthroughLayerFB passthroughLayer = XR_NULL_HANDLE; // guarded by frameMutex
 
     // Stats
     uint64_t framesSubmitted = 0;
@@ -410,6 +424,60 @@ void do_recenter(XrTime time) {
     mods::log::info("Recentred view");
 }
 
+// --- Passthrough -------------------------------------------------------------------------------
+
+void destroy_passthrough() {
+    XrPassthroughLayerFB layer = XR_NULL_HANDLE;
+    {
+        std::lock_guard lock{g.frameMutex};
+        layer = g.passthroughLayer;
+        g.passthroughLayer = XR_NULL_HANDLE;
+    }
+    if (layer != XR_NULL_HANDLE) {
+        g.destroyPassthroughLayer(layer);
+    }
+    if (g.passthrough != XR_NULL_HANDLE) {
+        g.destroyPassthrough(g.passthrough);
+        g.passthrough = XR_NULL_HANDLE;
+        mods::log::info("Passthrough stopped");
+    }
+}
+
+bool create_passthrough() {
+    XrPassthroughCreateInfoFB ci{XR_TYPE_PASSTHROUGH_CREATE_INFO_FB};
+    ci.flags = XR_PASSTHROUGH_IS_RUNNING_AT_CREATION_BIT_FB;
+    if (!xr_ok(g.createPassthrough(g.session, &ci, &g.passthrough), "xrCreatePassthroughFB")) {
+        g.passthrough = XR_NULL_HANDLE;
+        return false;
+    }
+    XrPassthroughLayerCreateInfoFB li{XR_TYPE_PASSTHROUGH_LAYER_CREATE_INFO_FB};
+    li.passthrough = g.passthrough;
+    li.flags = XR_PASSTHROUGH_IS_RUNNING_AT_CREATION_BIT_FB;
+    li.purpose = XR_PASSTHROUGH_LAYER_PURPOSE_RECONSTRUCTION_FB;
+    XrPassthroughLayerFB layer = XR_NULL_HANDLE;
+    if (!xr_ok(g.createPassthroughLayer(g.session, &li, &layer), "xrCreatePassthroughLayerFB")) {
+        g.destroyPassthrough(g.passthrough);
+        g.passthrough = XR_NULL_HANDLE;
+        return false;
+    }
+    std::lock_guard lock{g.frameMutex};
+    g.passthroughLayer = layer;
+    mods::log::info("Passthrough started (XR_FB_passthrough)");
+    return true;
+}
+
+// Game thread: bring the passthrough layer up or down to match the tabletop setting.
+void update_passthrough() {
+    const bool want = g.wantSeeThrough && g.hasFbPassthrough && g.sessionRunning && !g.passthroughFailed;
+    if (want && g.passthrough == XR_NULL_HANDLE) {
+        if (!create_passthrough()) {
+            g.passthroughFailed = true; // fall back to ALPHA_BLEND / opaque for this session
+        }
+    } else if (!want && g.passthrough != XR_NULL_HANDLE) {
+        destroy_passthrough();
+    }
+}
+
 // --- Session -------------------------------------------------------------------------------------
 
 bool frames_idle_locked() {
@@ -450,6 +518,9 @@ void teardown_session() {
         }
     }
     gpu_wait_idle();
+    destroy_passthrough();
+    g.passthroughFailed = false;
+    g.hasAlphaBlend = false;
     for (auto& sc : g.eyeSwapchains) {
         destroy_swapchain(sc);
     }
@@ -541,6 +612,15 @@ bool create_session() {
         teardown_session();
         return false;
     }
+
+    uint32_t blendCount = 0;
+    xrEnumerateEnvironmentBlendModes(
+        g.instance, g.system, XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO, 0, &blendCount, nullptr);
+    std::vector<XrEnvironmentBlendMode> blends(blendCount);
+    xrEnumerateEnvironmentBlendModes(
+        g.instance, g.system, XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO, blendCount, &blendCount, blends.data());
+    g.hasAlphaBlend = std::ranges::find(blends, XR_ENVIRONMENT_BLEND_MODE_ALPHA_BLEND) != blends.end();
+    mods::log::info("See-through support: XR_FB_passthrough {}, ALPHA_BLEND {}", g.hasFbPassthrough, g.hasAlphaBlend);
 
     const float scale = config().renderScale;
     for (int eye = 0; eye < 2; ++eye) {
@@ -658,15 +738,32 @@ bool initialize(WGPUDevice device, WGPUAdapter adapter) {
         mods::log::error("The active OpenXR runtime does not support D3D12");
         return false;
     }
-    const char* enabled[] = {XR_KHR_D3D12_ENABLE_EXTENSION_NAME};
+    const bool hasPassthrough = std::ranges::any_of(exts, [](const XrExtensionProperties& e) {
+        return std::strcmp(e.extensionName, XR_FB_PASSTHROUGH_EXTENSION_NAME) == 0;
+    });
+    std::vector<const char*> enabled{XR_KHR_D3D12_ENABLE_EXTENSION_NAME};
+    if (hasPassthrough) {
+        enabled.push_back(XR_FB_PASSTHROUGH_EXTENSION_NAME);
+    }
     XrInstanceCreateInfo ci{XR_TYPE_INSTANCE_CREATE_INFO};
     std::strncpy(ci.applicationInfo.applicationName, "Dusklight VR", XR_MAX_APPLICATION_NAME_SIZE - 1);
     std::strncpy(ci.applicationInfo.engineName, "Dusklight", XR_MAX_ENGINE_NAME_SIZE - 1);
     ci.applicationInfo.apiVersion = XR_API_VERSION_1_0;
-    ci.enabledExtensionCount = 1;
-    ci.enabledExtensionNames = enabled;
+    ci.enabledExtensionCount = static_cast<uint32_t>(enabled.size());
+    ci.enabledExtensionNames = enabled.data();
     if (!xr_ok(xrCreateInstance(&ci, &g.instance), "xrCreateInstance")) {
         return false;
+    }
+    if (hasPassthrough) {
+        auto load = [](const char* name, auto& fn) {
+            xrGetInstanceProcAddr(g.instance, name, reinterpret_cast<PFN_xrVoidFunction*>(&fn));
+        };
+        load("xrCreatePassthroughFB", g.createPassthrough);
+        load("xrDestroyPassthroughFB", g.destroyPassthrough);
+        load("xrCreatePassthroughLayerFB", g.createPassthroughLayer);
+        load("xrDestroyPassthroughLayerFB", g.destroyPassthroughLayer);
+        g.hasFbPassthrough = g.createPassthrough && g.destroyPassthrough && g.createPassthroughLayer &&
+                             g.destroyPassthroughLayer;
     }
     XrInstanceProperties props{XR_TYPE_INSTANCE_PROPERTIES};
     if (XR_SUCCEEDED(xrGetInstanceProperties(g.instance, &props))) {
@@ -718,7 +815,20 @@ void poll() {
         ev = {XR_TYPE_EVENT_DATA_BUFFER};
     }
 
+    update_passthrough();
     retire_old_resources();
+}
+
+void set_see_through(bool want) { g.wantSeeThrough = want; }
+
+const char* see_through_mode() {
+    if (g.passthroughLayer != XR_NULL_HANDLE) {
+        return "passthrough";
+    }
+    if (g.hasAlphaBlend) {
+        return "alpha blend";
+    }
+    return "none (opaque)";
 }
 
 bool instance_ready() { return g.instance != XR_NULL_HANDLE; }
@@ -738,7 +848,8 @@ std::string status() {
     return g.runtimeName + " / " + g.systemName + ": " + (s >= 0 && s <= 8 ? kStates[s] : "?") + ", " +
            std::to_string(g.eyeSwapchains[0].width) + "x" + std::to_string(g.eyeSwapchains[0].height) +
            " per eye, " + std::to_string(g.framesSubmitted) + " frames submitted, " +
-           std::to_string(g.framesDiscarded) + " dropped";
+           std::to_string(g.framesDiscarded) + " dropped" +
+           (g.wantSeeThrough ? std::string(", see-through: ") + see_through_mode() : std::string());
 }
 
 void request_recenter() { g.recenterRequested = true; }
@@ -876,9 +987,9 @@ void begin_frame(uint64_t id) {
     g.frameCv.notify_all();
 }
 
-void arm_submit(uint64_t id, bool stereo, const QuadLayer& quad, void* quadToken) {
+void arm_submit(uint64_t id, bool stereo, bool seeThrough, const QuadLayer& quad, void* quadToken) {
     std::lock_guard lock{g.frameMutex};
-    g.armed = {id, stereo, quad, quad.enabled ? static_cast<QuadResources*>(quadToken) : nullptr};
+    g.armed = {id, stereo, seeThrough, quad, quad.enabled ? static_cast<QuadResources*>(quadToken) : nullptr};
 }
 
 void on_queue_submitted() {
@@ -909,7 +1020,21 @@ void on_queue_submitted() {
     std::array<XrCompositionLayerProjectionView, 2> projViews{};
     XrCompositionLayerProjection proj{XR_TYPE_COMPOSITION_LAYER_PROJECTION};
     XrCompositionLayerQuad quadLayer{XR_TYPE_COMPOSITION_LAYER_QUAD};
+    XrCompositionLayerPassthroughFB ptLayer{XR_TYPE_COMPOSITION_LAYER_PASSTHROUGH_FB};
     std::vector<const XrCompositionLayerBaseHeader*> layers;
+    XrEnvironmentBlendMode blendMode = XR_ENVIRONMENT_BLEND_MODE_OPAQUE;
+    // The tabletop eye images carry premultiplied alpha (0 around the diorama).
+    const bool seeThrough = copied && stereo && armed.seeThrough;
+    if (seeThrough) {
+        if (g.passthroughLayer != XR_NULL_HANDLE) {
+            ptLayer.flags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
+            ptLayer.layerHandle = g.passthroughLayer;
+            layers.push_back(reinterpret_cast<const XrCompositionLayerBaseHeader*>(&ptLayer));
+        } else if (g.hasAlphaBlend) {
+            blendMode = XR_ENVIRONMENT_BLEND_MODE_ALPHA_BLEND;
+        }
+        proj.layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
+    }
     if (copied && stereo) {
         for (int eye = 0; eye < 2; ++eye) {
             projViews[eye] = {XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW};
@@ -938,7 +1063,7 @@ void on_queue_submitted() {
 
     XrFrameEndInfo end{XR_TYPE_FRAME_END_INFO};
     end.displayTime = r->displayTime;
-    end.environmentBlendMode = XR_ENVIRONMENT_BLEND_MODE_OPAQUE;
+    end.environmentBlendMode = blendMode;
     end.layerCount = static_cast<uint32_t>(layers.size());
     end.layers = layers.data();
     xr_ok(xrEndFrame(g.session, &end), "xrEndFrame");
@@ -1059,13 +1184,16 @@ bool ensure_simulation_targets(uint32_t width, uint32_t height) {
     return true;
 }
 
-void simulated_views(FrameInfo& out) {
+void simulated_views(FrameInfo& out, float pitchDeg) {
     out = {};
     out.id = 0;
     out.shouldRender = true;
     out.viewsValid = true;
     const float halfIpd = 0.032f;
+    const float pitch = pitchDeg * kPi / 180.0f;
+    const Quat tilt{std::sin(pitch * 0.5f), 0.0f, 0.0f, std::cos(pitch * 0.5f)};
     for (int eye = 0; eye < 2; ++eye) {
+        out.views[eye].pose.orientation = tilt;
         out.views[eye].pose.position = {eye == 0 ? -halfIpd : halfIpd, 0.0f, 0.0f};
         out.views[eye].fov = {std::tan(-50.0f * kPi / 180.0f), std::tan(50.0f * kPi / 180.0f),
             std::tan(45.0f * kPi / 180.0f), std::tan(-45.0f * kPi / 180.0f)};

@@ -10,6 +10,7 @@ enum class Mode : int {
     Off = 0,
     Stereo = 1, // per-eye rendering, 6DOF head tracking
     Cinema = 2, // the flat game on a large world-locked virtual screen
+    Tabletop = 3, // the world as a small diorama on a real table, sky see-through
 };
 
 enum class HudFollow : int {
@@ -35,7 +36,16 @@ struct Config {
     float screenDistance = 3.0f; // cinema / 2D-only screens
     float screenWidth = 4.0f;
 
-    bool mirrorHud = true;       // composite the HUD onto the desktop mirror
+    // Tabletop (all positions relative to the head at recentre, metres)
+    float tableUnitsPerMeter = 5000.0f; // game units per metre of table (scale 1:50)
+    float tableHeight = -0.5f;          // table surface relative to eye level
+    float tableDistance = 0.45f;        // table centre in front of the head
+    float tableRadius = 0.4f;           // visible world radius around the player
+    float tableDepth = 0.15f;           // how far below the surface the world stays visible
+    bool tablePassthrough = true;       // show the real room around the diorama when the runtime can
+    bool tableFollowYaw = true;         // turn the diorama with the game camera (stick-up = away from you)
+
+    bool mirrorHud = true;      // composite the HUD onto the desktop mirror
     bool simulateHmd = false;    // debug: run the stereo pipeline without a headset
     float renderScale = 1.0f;    // XR swapchain size multiplier (relative to the runtime's recommendation)
 };

@@ -26,7 +26,7 @@ namespace {
 UiElementHandle g_statusText = 0;
 UiElementHandle g_frameText = 0;
 
-const char* const kModes[] = {"Off", "Stereo (6DOF)", "Cinema screen"};
+const char* const kModes[] = {"Off", "Stereo (6DOF)", "Cinema screen", "Tabletop"};
 const char* const kHudFollow[] = {"Smooth follow", "Head-locked", "Fixed in world"};
 
 void add_toggle(UiElementHandle pane, const char* label, ConfigVarHandle var) {
@@ -77,13 +77,22 @@ ModResult build_panel(ModContext*, UiElementHandle pane, void*, ModError*) {
     svc_ui->pane_add_control(mod_ctx, pane, &recenter, nullptr);
 
     svc_ui->pane_add_section(mod_ctx, pane, "View");
-    add_dropdown(pane, "VR mode", g_vars.mode, kModes, 3);
+    add_dropdown(pane, "VR mode", g_vars.mode, kModes, 4);
     add_number(pane, "World scale", g_vars.unitsPerMeter, 10, 1000, 5, " units/m");
     add_number(pane, "Stereo separation", g_vars.ipdPercent, 0, 400, 5, "%");
     add_toggle(pane, "Level horizon (comfort)", g_vars.levelHorizon);
     add_toggle(pane, "Disable depth of field", g_vars.disableDof);
     add_number(pane, "Culling field of view", g_vars.cullFov, 30, 178, 1, " deg");
     add_number(pane, "Render scale (restart session)", g_vars.renderScalePercent, 50, 200, 5, "%");
+
+    svc_ui->pane_add_section(mod_ctx, pane, "Tabletop");
+    add_number(pane, "Scale 1:", g_vars.tableScale, 2, 1000, 5, "");
+    add_number(pane, "Table height (from eyes)", g_vars.tableHeightCm, -200, 50, 5, " cm");
+    add_number(pane, "Table distance", g_vars.tableDistanceCm, 0, 300, 5, " cm");
+    add_number(pane, "Visible radius", g_vars.tableRadiusCm, 5, 500, 5, " cm");
+    add_number(pane, "Visible depth below table", g_vars.tableDepthCm, 0, 500, 5, " cm");
+    add_toggle(pane, "See-through background (passthrough)", g_vars.tablePassthrough);
+    add_toggle(pane, "Turn with the game camera", g_vars.tableFollowYaw);
 
     svc_ui->pane_add_section(mod_ctx, pane, "HUD & menus");
     add_dropdown(pane, "HUD placement", g_vars.hudFollow, kHudFollow, 3);

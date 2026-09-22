@@ -20,6 +20,13 @@ struct ConfigVars {
     ConfigVarHandle menuWidthCm = 0;
     ConfigVarHandle screenDistanceCm = 0;
     ConfigVarHandle screenWidthCm = 0;
+    ConfigVarHandle tableScale = 0; // 1:N
+    ConfigVarHandle tableHeightCm = 0;
+    ConfigVarHandle tableDistanceCm = 0;
+    ConfigVarHandle tableRadiusCm = 0;
+    ConfigVarHandle tableDepthCm = 0;
+    ConfigVarHandle tablePassthrough = 0;
+    ConfigVarHandle tableFollowYaw = 0;
     ConfigVarHandle mirrorHud = 0;
     ConfigVarHandle simulateHmd = 0;
     ConfigVarHandle renderScalePercent = 0;

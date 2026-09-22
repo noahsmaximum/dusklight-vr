@@ -39,6 +39,14 @@ DEFINE_HOOK_SYMBOL("src/m_Do/m_Do_graphic.cpp#drawDepth2", void(view_class*, vie
 DEFINE_HOOK_SYMBOL("src/m_Do/m_Do_graphic.cpp#trimming", void(view_class*, view_port_class*), Trimming);
 DEFINE_HOOK_SYMBOL("mDoLib_clipper::setup", void(f32, f32, f32, f32), ClipperSetup);
 DEFINE_HOOK_SYMBOL("aurora::window::get_window_size", AuroraWindowSize(), GetWindowSize);
+// Tabletop: the two J3DUClipper::clip overloads (sphere, box) by decorated name, the sky lists, fog.
+DEFINE_HOOK_SYMBOL("?clip@J3DUClipper@@QEBAHPEAY03$$CBMUVec@@M@Z", int(const void*, const f32 (*)[4], Vec, f32),
+    ClipSphere);
+DEFINE_HOOK_SYMBOL("?clip@J3DUClipper@@QEBAHPEAY03$$CBMPEAUVec@@1@Z", int(const void*, const f32 (*)[4], Vec*, Vec*),
+    ClipBox);
+DEFINE_HOOK_SYMBOL("dComIfGd_drawOpaListSky", void(), DrawOpaSky);
+DEFINE_HOOK_SYMBOL("dComIfGd_drawXluListSky", void(), DrawXluSky);
+DEFINE_HOOK_SYMBOL("GXSetFog", void(GXFogType, f32, f32, f32, f32, GXColor), SetFog);
 
 namespace vr::render {
 namespace {
@@ -59,6 +67,8 @@ struct Frame {
     std::array<WGPUTextureView, 2> hud{}; // [0] over black, [1] over white
     WGPUTextureView mono = nullptr;
     xr::QuadLayer quad;
+    bool tabletop = false; // diorama camera + cut applied this frame
+    std::array<gpu::CutParams, 2> cut{};
 };
 Frame f;
 
@@ -67,6 +77,8 @@ struct Packet {
     uint64_t seq = 0;
     uint64_t xrId = 0;
     bool stereo = false;
+    bool tabletop = false;   // eye images carry alpha
+    bool seeThrough = false; // ...and the runtime should show the room behind them
     std::array<WGPUTextureView, 2> scene{};
     std::array<WGPUTextureView, 2> hud{};
     WGPUTextureView mono = nullptr;
@@ -106,6 +118,15 @@ struct Placement {
     Pose menuPose;
 };
 Placement g_place;
+
+// Where the diorama is looking in the game world (smoothed so the table glides under the player).
+struct Table {
+    bool init = false;
+    Vec3 anchor; // world units
+    float align = 0.0f; // world yaw that maps the game camera's heading to "away from the player"
+    int64_t lastTicks = 0;
+};
+Table g_table;
 
 uint64_t g_stereoFrames = 0;
 uint64_t g_monoFrames = 0;
@@ -221,14 +242,14 @@ Pose eye_pose(const xr::FrameInfo& info, int eye) {
     return p;
 }
 
-// Rewrites the camera's view_class for one eye: the game camera becomes the tracking-space origin,
-// the eye pose (metres -> game units) is applied on top, and the projection becomes the headset's
-// asymmetric frustum while keeping the game's depth mapping.
-void apply_eye(view_class& v, const ViewBackup& base, const Mtx34& gameView, int eye) {
-    const auto& cfg = config();
+// Rewrites the camera's view_class for one eye. `trackingFromWorld` maps the game world into the
+// tracking space (in game units): the game camera itself in stereo mode, the table placement in
+// tabletop mode. The eye pose (metres -> game units via `unitsPerMeter`) is applied on top, and the
+// projection becomes the headset's asymmetric frustum while keeping the game's depth mapping.
+void apply_eye(view_class& v, const ViewBackup& base, const Mtx34& trackingFromWorld, float unitsPerMeter, int eye) {
     const Pose pose = eye_pose(f.info, eye);
-    const Mtx34 eyeFromTracking = inverse_rigid(pose_to_mtx(pose, cfg.unitsPerMeter));
-    const Mtx34 view = mul(eyeFromTracking, gameView);
+    const Mtx34 eyeFromTracking = inverse_rigid(pose_to_mtx(pose, unitsPerMeter));
+    const Mtx34 view = mul(eyeFromTracking, trackingFromWorld);
 
     const Fov& fov = f.info.views[eye].fov;
     const float w = fov.tanRight - fov.tanLeft;
@@ -265,6 +286,94 @@ void apply_eye(view_class& v, const ViewBackup& base, const Mtx34& gameView, int
     v.lookat.center.set(center.x, center.y, center.z);
     v.lookat.up.set(inv.m[0][1], inv.m[1][1], inv.m[2][1]);
     v.bank = 0;
+}
+
+float wrap_angle(float a);
+
+// --- Tabletop -----------------------------------------------------------------------------------
+
+// Places the game world on the table: the (smoothed) player position sits at the table centre and
+// the game camera's heading points away from the player, so stick directions still match what the
+// player sees. Returns trackingFromWorld in game units (tracking metres x table scale).
+Mtx34 table_transform(const Mtx34& gameView, const ViewBackup& base) {
+    const auto& cfg = config();
+    const float s = cfg.tableUnitsPerMeter;
+
+    const int64_t now = now_ticks();
+    const float dt = g_table.lastTicks != 0 ? std::clamp(static_cast<float>(ticks_to_ms(now - g_table.lastTicks)) / 1000.0f, 0.0f, 0.1f) : 0.0f;
+    g_table.lastTicks = now;
+
+    Vec3 target{base.lookat.center.x, base.lookat.center.y, base.lookat.center.z};
+    if (fopAc_ac_c* player = dComIfGp_getPlayer(0)) {
+        target = {player->current.pos.x, player->current.pos.y, player->current.pos.z};
+    }
+    const Vec3 fwd{-gameView.m[2][0], -gameView.m[2][1], -gameView.m[2][2]};
+    const float camYaw = std::atan2(-fwd.x, -fwd.z);
+
+    const float radius = cfg.tableRadius * s;
+    const Vec3 delta = target - g_table.anchor;
+    if (!g_table.init || length(delta) > radius * 4.0f) {
+        // First frame, or a warp / room change: jump straight there.
+        g_table.init = true;
+        g_table.anchor = target;
+        g_table.align = -camYaw;
+    } else {
+        // Horizontal: follow once the player leaves a small dead zone around the centre.
+        const float deadZone = radius * 0.1f;
+        const Vec3 flat{delta.x, 0.0f, delta.z};
+        const float dist = length(flat);
+        if (dist > deadZone) {
+            const float k = 1.0f - std::exp(-dt * 5.0f);
+            g_table.anchor = g_table.anchor + normalize(flat) * ((dist - deadZone) * k);
+        }
+        // Vertical: slower, so jumps and small steps don't bob the table.
+        g_table.anchor.y += delta.y * (1.0f - std::exp(-dt * 2.0f));
+        if (cfg.tableFollowYaw) {
+            g_table.align = wrap_angle(g_table.align + wrap_angle(-camYaw - g_table.align) * (1.0f - std::exp(-dt * 4.0f)));
+        }
+    }
+
+    const Vec3 tablePos{0.0f, cfg.tableHeight * s, -cfg.tableDistance * s};
+    return mul(translation34(tablePos), mul(rot_y34(g_table.align), translation34(g_table.anchor * -1.0f)));
+}
+
+// Uniforms for the cut shader of one eye, from the view/projection apply_eye just wrote.
+gpu::CutParams cut_params(const view_class& v) {
+    const auto& cfg = config();
+    const float s = cfg.tableUnitsPerMeter;
+    const bool reversed = gpu::reversed_z();
+
+    // Clip space as Aurora feeds it to the GPU (see fill_uniform in aurora's shader_info.cpp).
+    Mtx44f proj;
+    std::memcpy(proj.m, v.projMtx, sizeof(proj.m));
+    for (int c = 0; c < 4; ++c) {
+        proj.m[2][c] = reversed ? -proj.m[2][c] : proj.m[2][c] + proj.m[3][c];
+    }
+    const Mtx44f clipFromWorld = mul(proj, load(v.viewMtx));
+    Mtx44f worldFromClip;
+    gpu::CutParams p;
+    if (!inverse44(clipFromWorld, worldFromClip)) {
+        return p;
+    }
+    for (int r = 0; r < 4; ++r) {
+        for (int c = 0; c < 4; ++c) {
+            p.worldFromClip[c * 4 + r] = worldFromClip.m[r][c];
+        }
+    }
+    const float radius = cfg.tableRadius * s;
+    p.anchor[0] = g_table.anchor.x;
+    p.anchor[1] = g_table.anchor.y;
+    p.anchor[2] = g_table.anchor.z;
+    p.anchor[3] = radius;
+    p.params[0] = radius * 0.08f;                               // soft rim
+    p.params[1] = g_table.anchor.y - cfg.tableDepth * s;         // floor
+    p.params[2] = 0.02f * s;                                     // floor fade (2 cm)
+    p.params[3] = reversed ? 0.0f : 1.0f;                        // cleared depth
+    return p;
+}
+
+bool tabletop_culling_off() {
+    return config().mode == Mode::Tabletop && (xr::session_running() || config().simulateHmd);
 }
 
 // --- Quad placement ---------------------------------------------------------------------------------
@@ -384,7 +493,7 @@ void finish_compute(ModContext*, const GfxComputeContext* ctx, const void* paylo
     }
     if (p.stereo) {
         for (int eye = 0; eye < 2; ++eye) {
-            gpu::blit(ctx->encoder, p.scene[eye], p.eyeTargets[eye], p.targetFormat);
+            gpu::blit(ctx->encoder, p.scene[eye], p.eyeTargets[eye], p.targetFormat, p.tabletop);
         }
         static bool logged = false;
         if (!logged) {
@@ -401,7 +510,7 @@ void finish_compute(ModContext*, const GfxComputeContext* ctx, const void* paylo
     }
     g_workerThread.store(GetCurrentThreadId(), std::memory_order_release);
     if (p.xrId != 0) {
-        xr::arm_submit(p.xrId, p.stereo, p.quad, p.quadToken);
+        xr::arm_submit(p.xrId, p.stereo, p.seeThrough, p.quad, p.quadToken);
     } else if (p.stereo) {
         g_simulationArmed.store(true, std::memory_order_release);
     }
@@ -440,7 +549,7 @@ void apply_game_overrides() {
 void update_efb_override() {
     uint32_t w = 0;
     uint32_t h = 0;
-    if (f.mode == Mode::Stereo && xr::session_running() && xr::eye_height() != 0) {
+    if ((f.mode == Mode::Stereo || f.mode == Mode::Tabletop) && xr::session_running() && xr::eye_height() != 0) {
         h = xr::eye_height() & ~1u;
         w = ((h * 4 + 2) / 3) & ~1u;
     }
@@ -480,6 +589,10 @@ HookAction begin_frame_pre(ModContext*, void*, void*, void*) {
     f = {};
     const auto& cfg = config();
     f.mode = cfg.mode;
+    xr::set_see_through(f.mode == Mode::Tabletop && cfg.tablePassthrough);
+    if (f.mode != Mode::Tabletop) {
+        g_table.init = false; // re-place the diorama next time
+    }
     if (f.mode != Mode::Off) {
         xr::poll();
     }
@@ -493,7 +606,7 @@ HookAction begin_frame_pre(ModContext*, void*, void*, void*) {
         f.xrId = xr::wait_frame();
         smooth(g_timing.waitMs, ticks_to_ms(now_ticks() - waitStart));
     }
-    f.active = f.xrId != 0 || (cfg.simulateHmd && f.mode == Mode::Stereo);
+    f.active = f.xrId != 0 || (cfg.simulateHmd && (f.mode == Mode::Stereo || f.mode == Mode::Tabletop));
     return HOOK_CONTINUE;
 }
 
@@ -534,7 +647,7 @@ void end_hud_capture() {
     if (f.eye == 0 || f.eye == 1) {
         f.hud[f.eye] = view;
     }
-    gpu::push_restore(f.sceneNoHud);
+    gpu::push_restore(f.sceneNoHud, f.tabletop);
 }
 
 void painter_replace(ModContext*, void*, void* retval, void*) {
@@ -548,11 +661,11 @@ void painter_replace(ModContext*, void*, void* retval, void*) {
     }
 
     bool stereo = false;
-    if (f.mode == Mode::Stereo) {
+    if (f.mode == Mode::Stereo || f.mode == Mode::Tabletop) {
         if (f.xrId != 0) {
             stereo = xr::locate_views(f.xrId, f.info);
         } else if (config().simulateHmd) {
-            xr::simulated_views(f.info);
+            xr::simulated_views(f.info, f.mode == Mode::Tabletop ? -40.0f : 0.0f);
             stereo = true;
         }
     }
@@ -578,12 +691,17 @@ void painter_replace(ModContext*, void*, void* retval, void*) {
     f.hasCamera = cam != nullptr;
 
     ViewBackup backup{};
-    Mtx34 gameView;
+    Mtx34 trackingFromWorld;
+    float unitsPerMeter = config().unitsPerMeter;
+    f.tabletop = cam != nullptr && f.mode == Mode::Tabletop;
     if (cam != nullptr) {
         backup_view(cam->view, backup);
-        gameView = load(backup.viewMtx);
-        if (config().levelHorizon) {
-            gameView = level_view(gameView);
+        const Mtx34 gameView = load(backup.viewMtx);
+        if (f.tabletop) {
+            trackingFromWorld = table_transform(gameView, backup);
+            unitsPerMeter = config().tableUnitsPerMeter;
+        } else {
+            trackingFromWorld = config().levelHorizon ? level_view(gameView) : gameView;
         }
     }
 
@@ -596,7 +714,10 @@ void painter_replace(ModContext*, void*, void* retval, void*) {
             gpu::push_clear();
         }
         if (cam != nullptr) {
-            apply_eye(cam->view, backup, gameView, eye);
+            apply_eye(cam->view, backup, trackingFromWorld, unitsPerMeter, eye);
+            if (f.tabletop) {
+                f.cut[eye] = cut_params(cam->view);
+            }
         }
         run();
         end_hud_capture(); // in case the painter skipped the HUD stage
@@ -636,6 +757,16 @@ void run_stage_post(ModContext*, void* args, void*, void*) {
     // scene, then let the 2D phase draw into the main framebuffer over black (first eye) or white
     // (second eye); the pair gives the compositor exact alpha for the headset's quad layer. This
     // stays on the EFB (not an offscreen pass) so the game's 2D viewport scaling applies.
+    if (f.tabletop) {
+        // Fade out everything beyond the table (and the empty background) using this eye's depth.
+        GfxResolveDesc desc = GFX_RESOLVE_DESC_INIT;
+        desc.color = false;
+        desc.depth = true;
+        GfxResolvedTargets out = GFX_RESOLVED_TARGETS_INIT;
+        if (svc_gfx->resolve_pass(mod_ctx, &desc, &out) == MOD_OK && out.depth != nullptr) {
+            gpu::push_cut(out.depth, f.cut[f.eye]);
+        }
+    }
     f.sceneNoHud = resolve_color();
     if (f.sceneNoHud == nullptr) {
         return;
@@ -681,6 +812,30 @@ HookAction clipper_setup_pre(ModContext*, void* args, void*, void*) {
     return HOOK_CONTINUE;
 }
 
+HookAction clip_pre(ModContext*, void*, void* retval, void*) {
+    // The diorama shows everything around the player, including what is behind the game camera,
+    // so nothing may be frustum-culled against it.
+    if (tabletop_culling_off()) {
+        *static_cast<int*>(retval) = 0;
+        return HOOK_SKIP_ORIGINAL;
+    }
+    return HOOK_CONTINUE;
+}
+
+HookAction sky_pre(ModContext*, void*, void*, void*) {
+    // No sky in tabletop: the empty background becomes transparent (the real room shows through).
+    return f.eye >= 0 && f.tabletop ? HOOK_SKIP_ORIGINAL : HOOK_CONTINUE;
+}
+
+HookAction fog_pre(ModContext*, void* args, void*, void*) {
+    // Fog is computed from the distance to the eye, which in tabletop is thousands of game units
+    // away from everything (the whole diorama would fog over).
+    if (f.eye >= 0 && f.tabletop) {
+        mods::arg_ref<GXFogType>(args, 0) = GX_FOG_NONE;
+    }
+    return HOOK_CONTINUE;
+}
+
 HookAction end_frame_pre(ModContext*, void*, void*, void*) {
     if (!f.active) {
         return HOOK_CONTINUE;
@@ -690,6 +845,8 @@ HookAction end_frame_pre(ModContext*, void*, void*, void*) {
     Packet p;
     p.xrId = f.xrId;
     p.stereo = f.scene[0] != nullptr && f.scene[1] != nullptr && (f.xrId != 0 || simulating);
+    p.tabletop = f.tabletop;
+    p.seeThrough = f.tabletop && config().tablePassthrough;
     p.scene = f.scene;
     p.hud = f.hud;
     p.mono = f.mono;
@@ -756,6 +913,11 @@ bool install() {
     check<Trimming>(mods::hook::add_pre<Trimming>(trimming_pre), "trimming", false);
     check<ClipperSetup>(mods::hook::add_pre<ClipperSetup>(clipper_setup_pre), "mDoLib_clipper::setup", false);
     check<GetWindowSize>(mods::hook::add_post<GetWindowSize>(window_size_post), "get_window_size", false);
+    check<ClipSphere>(mods::hook::add_pre<ClipSphere>(clip_pre), "J3DUClipper::clip (sphere)", false);
+    check<ClipBox>(mods::hook::add_pre<ClipBox>(clip_pre), "J3DUClipper::clip (box)", false);
+    check<DrawOpaSky>(mods::hook::add_pre<DrawOpaSky>(sky_pre), "dComIfGd_drawOpaListSky", false);
+    check<DrawXluSky>(mods::hook::add_pre<DrawXluSky>(sky_pre), "dComIfGd_drawXluListSky", false);
+    check<SetFog>(mods::hook::add_pre<SetFog>(fog_pre), "GXSetFog", false);
     if (!ok) {
         return false;
     }

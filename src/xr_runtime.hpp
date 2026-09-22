@@ -58,6 +58,10 @@ bool instance_ready();
 bool session_running();
 std::string status();
 void request_recenter();
+// Game thread: whether the current mode wants the real world behind the eye images (tabletop).
+void set_see_through(bool want);
+// How see-through frames are presented: "passthrough", "alpha blend" or "none (opaque)".
+const char* see_through_mode();
 
 // Frame loop ------------------------------------------------------------------------------------
 
@@ -71,7 +75,8 @@ void abandon_frame(uint64_t id);
 // Render worker.
 void begin_frame(uint64_t id);
 // quadToken identifies the quad resources the frame was rendered into (quad_token()).
-void arm_submit(uint64_t id, bool stereo, const QuadLayer& quad, void* quadToken);
+// seeThrough: the eye images carry premultiplied alpha to show the real world behind them.
+void arm_submit(uint64_t id, bool stereo, bool seeThrough, const QuadLayer& quad, void* quadToken);
 void on_queue_submitted();
 
 // Render targets (Dawn textures backed by capturable D3D12 resources) ------------------------------
@@ -86,7 +91,8 @@ WGPUTextureView ensure_quad_target(uint32_t width, uint32_t height);
 void* quad_token();
 
 // Debug: fake stereo views used when no headset is present (simulateHmd).
-void simulated_views(FrameInfo& out);
+// pitchDeg tilts the fake head (negative looks down).
+void simulated_views(FrameInfo& out, float pitchDeg = 0.0f);
 // Debug: create eye targets without a session so simulation exercises capture + composition.
 bool ensure_simulation_targets(uint32_t width, uint32_t height);
 // Debug: once, copy the left simulation target out through D3D12 right after a frame submit.

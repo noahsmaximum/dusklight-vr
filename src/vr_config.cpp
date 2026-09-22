@@ -55,6 +55,13 @@ bool register_config() {
     ok &= reg_int(g_vars.menuWidthCm, "menuWidthCm", 180);
     ok &= reg_int(g_vars.screenDistanceCm, "screenDistanceCm", 300);
     ok &= reg_int(g_vars.screenWidthCm, "screenWidthCm", 400);
+    ok &= reg_int(g_vars.tableScale, "tableScale", 50);
+    ok &= reg_int(g_vars.tableHeightCm, "tableHeightCm", -50);
+    ok &= reg_int(g_vars.tableDistanceCm, "tableDistanceCm", 45);
+    ok &= reg_int(g_vars.tableRadiusCm, "tableRadiusCm", 40);
+    ok &= reg_int(g_vars.tableDepthCm, "tableDepthCm", 15);
+    ok &= reg_bool(g_vars.tablePassthrough, "tablePassthrough", true);
+    ok &= reg_bool(g_vars.tableFollowYaw, "tableFollowYaw", true);
     ok &= reg_bool(g_vars.mirrorHud, "mirrorHud", true);
     ok &= reg_bool(g_vars.simulateHmd, "simulateHmd", false);
     ok &= reg_int(g_vars.renderScalePercent, "renderScalePercent", 100);
@@ -80,7 +87,7 @@ static bool get_bool(ConfigVarHandle h, bool fallback) {
 
 void refresh_config() {
     Config c;
-    c.mode = static_cast<Mode>(std::clamp<int64_t>(get_int(g_vars.mode, 1), 0, 2));
+    c.mode = static_cast<Mode>(std::clamp<int64_t>(get_int(g_vars.mode, 1), 0, 3));
     c.unitsPerMeter = static_cast<float>(std::clamp<int64_t>(get_int(g_vars.unitsPerMeter, 100), 10, 1000));
     c.ipdScale = static_cast<float>(std::clamp<int64_t>(get_int(g_vars.ipdPercent, 100), 0, 400)) / 100.0f;
     c.levelHorizon = get_bool(g_vars.levelHorizon, true);
@@ -95,6 +102,14 @@ void refresh_config() {
     c.screenDistance =
         static_cast<float>(std::clamp<int64_t>(get_int(g_vars.screenDistanceCm, 300), 50, 3000)) / 100.0f;
     c.screenWidth = static_cast<float>(std::clamp<int64_t>(get_int(g_vars.screenWidthCm, 400), 20, 3000)) / 100.0f;
+    // Scale 1:N with the game's ~1 unit per centimetre.
+    c.tableUnitsPerMeter = static_cast<float>(std::clamp<int64_t>(get_int(g_vars.tableScale, 50), 2, 1000)) * 100.0f;
+    c.tableHeight = static_cast<float>(std::clamp<int64_t>(get_int(g_vars.tableHeightCm, -50), -200, 50)) / 100.0f;
+    c.tableDistance = static_cast<float>(std::clamp<int64_t>(get_int(g_vars.tableDistanceCm, 45), 0, 300)) / 100.0f;
+    c.tableRadius = static_cast<float>(std::clamp<int64_t>(get_int(g_vars.tableRadiusCm, 40), 5, 500)) / 100.0f;
+    c.tableDepth = static_cast<float>(std::clamp<int64_t>(get_int(g_vars.tableDepthCm, 15), 0, 500)) / 100.0f;
+    c.tablePassthrough = get_bool(g_vars.tablePassthrough, true);
+    c.tableFollowYaw = get_bool(g_vars.tableFollowYaw, true);
     c.mirrorHud = get_bool(g_vars.mirrorHud, true);
     c.simulateHmd = get_bool(g_vars.simulateHmd, false);
     c.renderScale = static_cast<float>(std::clamp<int64_t>(get_int(g_vars.renderScalePercent, 100), 50, 200)) / 100.0f;

@@ -12,6 +12,8 @@ OpenXR VR for [Dusklight](https://github.com/TwilitRealm/dusklight) 2.0 as a sel
   The HUD follows your head lazily; pause menus lock in place in front of you; 2D-only screens (title,
   file select) become a large virtual screen.
 - **Cinema mode**: the flat game on a big world-locked screen.
+- **Tabletop mode**: the world as a small diorama on your real table (scale 1:50 by default), with
+  the sky see-through so your room shows around it (passthrough, where the runtime supports it).
 - Frames are paced by the headset (`xrWaitFrame`) and rendered through Dusklight's frame interpolation,
   so every headset refresh gets a fresh frame instead of the game's 30 Hz simulation rate.
 
@@ -34,7 +36,8 @@ config): frame interpolation *Unlimited*, vsync off, letterboxing off, mirror mo
 | --- | --- |
 | Stereo | `mDoGph_Painter` is replace-hooked and run once per eye with the camera's `view_class` rewritten (eye pose × game view, headset off-axis frustum). Dusklight's J3D computes view×model at paint time, so the draw lists recorded by the simulation re-render correctly for each eye. Depth is cleared between eyes; UI timers are frozen for the second eye. |
 | Culling | `mDoLib_clipper::setup` is widened so turning your head never reveals culled geometry. |
-| HUD layer | Between `GFX_STAGE_FRAME_BEFORE_HUD` and `FRAME_AFTER_HUD` the 2D phase is redirected into an offscreen pass, over black for eye 1 and over white for eye 2; the compositor recovers exact premultiplied alpha from the pair. |
+| HUD layer | At `GFX_STAGE_FRAME_BEFORE_HUD` the scene is snapshotted and the main framebuffer cleared to black (eye 1) / white (eye 2); the 2D phase draws over it, the result is snapshotted at `FRAME_AFTER_HUD` and the scene put back. The compositor recovers exact premultiplied alpha from the pair. |
+| Tabletop | The eye views are built from a table placement (player at the table centre, game-camera heading pointing away from you, scale 1:N) instead of the game camera. Frustum culling (`J3DUClipper::clip`), the sky lists and fog are switched off. At `FRAME_BEFORE_HUD` each eye's depth is snapshotted and a pass rebuilds world positions from it, fading out everything beyond the table radius / below the table into premultiplied alpha. The runtime shows the room behind it via `XR_FB_passthrough`, or the `ALPHA_BLEND` environment blend mode. |
 | GPU handoff | Eye/HUD images are composited on Aurora's render worker (GfxService compute callback) into Dawn textures whose `ID3D12Resource` is captured when they are created. Right after the frame's `wgpuQueueSubmit` (observed via the import table), they are copied into the OpenXR swapchains on Dawn's own D3D12 queue and `xrEndFrame` is called. Dawn's device/queue come from `webgpu_dawn.dll` exports. |
 | Frame loop | `xrWaitFrame` at `aurora_begin_frame`, `xrBeginFrame` when the worker starts the frame, `xrEndFrame` after its submit. |
 

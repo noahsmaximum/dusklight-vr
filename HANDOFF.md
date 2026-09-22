@@ -11,7 +11,7 @@ Latest release: **v0.1.0-beta** (prerelease, published by CI on tag push).
 | HUD quad layer | Fixed (was shrunk into a corner); user reports "looking good" |
 | Headset render size (4:3 at eye height) | Shipped; 31 fps report was before this. **Waiting on the user's panel stats line** (fps / xrWaitFrame / both-eyes ms / render size) to judge GPU vs pacing |
 | Cinema mode, recenter, menu lock | Implemented, not explicitly confirmed in headset |
-| **Tabletop mode** | Designed, not started (plan below) |
+| **Tabletop mode** | Implemented on branch `tabletop`; verified in simulation (diorama, cut, alpha); **not yet tried in a headset** (see checklist below) |
 
 Runtime on the user's machine: Virtual Desktop (VDXR). It recommends 2688 px tall per eye, so the
 mod renders 3584x2688 twice per frame; "Render scale" in the panel lowers it (takes effect when
@@ -73,31 +73,47 @@ Bump `MOD_VERSION` in `CMakeLists.txt` (and `project(VERSION)` numerically), upd
 `.github/release-notes.md` (install guide first, short bullets), commit, tag `vX.Y.Z[-beta]`, push
 the tag. CI builds Windows x64, merges, and publishes the release with those notes.
 
-## Next: Tabletop mode (designed, not implemented)
+## Tabletop mode (branch `tabletop`)
 
-Goal: the world as a small diorama sitting on a real table, see-through sky (passthrough).
+The world is a small diorama on a real table, and the sky is see-through.
 
-1. **Mode/config**: `Mode::Tabletop = 3`; vars `tabletopScale` (units/m, ~1500 → Link ≈ 10 cm),
-   `tableHeightCm` (~-55 below eyes at recentre), `tableDistanceCm` (~60), `tableRadiusCm` (~50),
-   `tabletopPassthrough`, `followYaw`.
-2. **Camera** (`apply_eye`): replace `gameView` with world→tracking
-   `T(tablePos·s) · RotY(align) · T(-anchor)`; view = inverse(eye pose scaled by s) × that.
-   Anchor = player position (`dComIfGp_getPlayer(0)->current.pos`) smoothed with a deadzone; align =
-   game-camera yaw (smoothed) so stick-up moves Link away from the player.
-3. **Culling**: behind-the-game-camera geometry must still draw. Hook both
-   `J3DUClipper::clip` overloads (J3DUClipper.cpp:32 and :63; overloaded → need the mangled names or
-   `DEFINE_HOOK` with a `static_cast` member pointer) to return "visible" in tabletop.
-4. **Sky**: skip `dComIfGd_drawOpaListSky` / `dComIfGd_drawXluListSky` (NOINLINE wrappers, hookable).
-5. **Transparency**: take the depth snapshot at `FRAME_BEFORE_HUD` (`resolve_pass` with
-   `depth=true`, R32Float — use `textureLoad`, not filterable; the HUD clear later wipes depth). New
-   blit variant: alpha = 0 where depth is far (reversed-Z: 0), otherwise reconstruct view-space z from
-   depth with the eye's projection (reversed: `zv = m23 / (d - m22)`; standard:
-   `zv = -m23 / (d + m22 - 1)`), rebuild the world position via the inverse view, and feather alpha to
-   0 beyond `tableRadius` from the anchor (XZ). Output premultiplied. Per-eye params in a small
-   uniform buffer written with `wgpuQueueWriteBuffer` in the compute callback.
-6. **Passthrough** (`xr_runtime`): enable `XR_FB_passthrough` at instance creation if offered →
-   create passthrough + reconstruction layer, submit `XrCompositionLayerPassthroughFB` before the
-   projection layer; else use `XR_ENVIRONMENT_BLEND_MODE_ALPHA_BLEND` if
-   `xrEnumerateEnvironmentBlendModes` lists it; else opaque (black void). Projection layer gets
-   `XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT` in tabletop; `arm_submit` needs a flag.
-7. HUD quad stays head-following; recentre re-places the table.
+How it works (see README "How it works" for the one-line version):
+
+- **Camera** (`render_hooks.cpp` `table_transform`): trackingFromWorld =
+  `T(tablePos*s) * RotY(align) * T(-anchor)`, eye view = inverse(eye pose scaled by `s`) x that.
+  `s` = `tableScale` x 100 units/m (1:50 by default, Link about 3 cm). The anchor follows the player
+  (`dComIfGp_getPlayer(0)->current.pos`) with a dead zone (10% of the radius) and exponential
+  smoothing. Y follows more slowly. It snaps on a warp (more than 4 radii away). `align` = -(game-camera
+  yaw), smoothed. `tableFollowYaw` off freezes it.
+- **Culling**: pre-hooks on both `J3DUClipper::clip` overloads, using MSVC decorated names, return
+  "visible" while tabletop runs (headset session or simulation).
+- **Sky / fog**: `dComIfGd_draw{Opa,Xlu}ListSky` are skipped during the eye loop. `GXSetFog` is
+  forced to `GX_FOG_NONE`, because the eye is thousands of units away and everything would fog over.
+- **Cut** (`gpu.cpp` `fs_cut`):
+  - At `FRAME_BEFORE_HUD`: `resolve_pass(depth)` (R32Float), then `push_cut`.
+  - `push_cut` rebuilds the world position from depth with inverse(P' x V). P' is the projection as
+    Aurora uploads it: reversed Z negates row 2.
+  - Mask = radial smoothstep (8% rim) x floor smoothstep (`tableDepth` below the anchor). Pixels with
+    cleared depth get 0.
+  - Blend: colour = dst x mask, alpha = mask. The EFB then holds premultiplied colour + alpha.
+  - The HUD restore and the worker blit keep alpha in tabletop (`BlitAlpha`).
+- **See-through** (`xr_runtime.cpp`):
+  - `XR_FB_passthrough` is enabled on the instance when offered. The passthrough and its
+    reconstruction layer are created in `poll()` while tabletop plus the passthrough option are on,
+    and submitted under the projection layer.
+  - Otherwise `XR_ENVIRONMENT_BLEND_MODE_ALPHA_BLEND` if the system lists it, otherwise opaque (black
+    around the table).
+  - The projection layer gets `BLEND_TEXTURE_SOURCE_ALPHA`. The panel status shows which path is active.
+- **Simulation**: the fake head pitches 40 degrees down in tabletop so the table is in view.
+
+**Headset test checklist:**
+- The table sits roughly on a real surface. Adjust height/distance, then Recenter.
+- The room shows around the diorama. Check the status line for "see-through: passthrough / alpha blend". VD may
+  need passthrough enabled in its settings.
+- Walking Link around: the table glides and follows, with no jitter. Camera swings turn the diorama.
+- Big areas (Hyrule Field) perform OK with culling off.
+- Screen fades and loading screens: check that alpha isn't broken by the fader.
+- Cutscenes, interiors (ceilings may cover the view; there is no roof cut yet), first-person aiming.
+
+**Ideas not done yet:** roof/ceiling cut in interiors (a height cap), a table rim or base, grab-to-move
+the table with controllers, a sphere-based clip test instead of culling nothing.
