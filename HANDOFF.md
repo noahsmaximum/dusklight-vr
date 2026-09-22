@@ -106,6 +106,13 @@ How it works (see README "How it works" for the one-line version):
   - The projection layer gets `BLEND_TEXTURE_SOURCE_ALPHA`. The panel status shows which path is active.
 - **Simulation**: the fake head pitches 40 degrees down in tabletop so the table is in view.
 
+- **VDXR (Virtual Desktop) reports neither XR_FB_passthrough nor ALPHA_BLEND** (confirmed 2026-09-21), so the
+  transparent area is filled with the "Background without passthrough" colour (black / green / magenta)
+  for chroma-key passthrough tools.
+- **Water** (all modes): `C_MTXLightPerspective` post-hook rebuilds the screen-space texgen from the eye's
+  asymmetric projection (the game builds it from the symmetric fovy/aspect: "portal" water). The old
+  Aurora fork could only skip those draws. Logs "Corrected a screen-space (water) projection" once.
+
 **Headset test checklist:**
 - The table sits roughly on a real surface. Adjust height/distance, then Recenter.
 - The room shows around the diorama. Check the status line for "see-through: passthrough / alpha blend". VD may
