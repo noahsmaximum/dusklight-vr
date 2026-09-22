@@ -53,8 +53,8 @@ struct Armed {
     uint64_t id = 0;
     bool stereo = false;
     bool seeThrough = false;
-    QuadLayer quad;
-    QuadResources* quadRes = nullptr;
+    std::array<QuadLayer, kQuadSlots> quad{};
+    std::array<QuadResources*, kQuadSlots> quadRes{};
 };
 
 constexpr uint32_t kCopyRing = 3;
@@ -87,7 +87,7 @@ struct State {
 
     std::array<Swapchain, 2> eyeSwapchains;
     std::array<d3d::CapturedTexture, 2> eyeTargets;
-    QuadResources* quad = nullptr;
+    std::array<QuadResources*, kQuadSlots> quads{};
     std::vector<std::pair<uint64_t, QuadResources*>> retiredQuads;
 
     // D3D12 copy infrastructure (runs on Dawn's queue so it is ordered after Dawn's frame work).
@@ -527,8 +527,10 @@ void teardown_session() {
     for (auto& t : g.eyeTargets) {
         t.reset();
     }
-    destroy_quad(g.quad);
-    g.quad = nullptr;
+    for (auto*& q : g.quads) {
+        destroy_quad(q);
+        q = nullptr;
+    }
     for (auto& [id, q] : g.retiredQuads) {
         destroy_quad(q);
     }
@@ -989,9 +991,14 @@ void begin_frame(uint64_t id) {
     g.frameCv.notify_all();
 }
 
-void arm_submit(uint64_t id, bool stereo, bool seeThrough, const QuadLayer& quad, void* quadToken) {
+void arm_submit(uint64_t id, bool stereo, bool seeThrough, const QuadLayer (&quads)[kQuadSlots],
+    void* const (&quadTokens)[kQuadSlots]) {
     std::lock_guard lock{g.frameMutex};
-    g.armed = {id, stereo, seeThrough, quad, quad.enabled ? static_cast<QuadResources*>(quadToken) : nullptr};
+    g.armed = {id, stereo, seeThrough, {}, {}};
+    for (int i = 0; i < kQuadSlots; ++i) {
+        g.armed.quad[i] = quads[i];
+        g.armed.quadRes[i] = quads[i].enabled ? static_cast<QuadResources*>(quadTokens[i]) : nullptr;
+    }
 }
 
 void on_queue_submitted() {
@@ -1012,16 +1019,19 @@ void on_queue_submitted() {
         jobs.push_back({&g.eyeSwapchains[0], &g.eyeTargets[0]});
         jobs.push_back({&g.eyeSwapchains[1], &g.eyeTargets[1]});
     }
-    QuadResources* quad = armed.quadRes;
-    const bool withQuad = r->shouldRender && armed.quad.enabled && quad != nullptr && quad->target;
-    if (withQuad) {
-        jobs.push_back({&quad->swapchain, &quad->target});
+    std::array<bool, kQuadSlots> withQuad{};
+    for (int i = 0; i < kQuadSlots; ++i) {
+        QuadResources* quad = armed.quadRes[i];
+        withQuad[i] = r->shouldRender && armed.quad[i].enabled && quad != nullptr && quad->target;
+        if (withQuad[i]) {
+            jobs.push_back({&quad->swapchain, &quad->target});
+        }
     }
     const bool copied = !jobs.empty() && copy_into_swapchains(jobs);
 
     std::array<XrCompositionLayerProjectionView, 2> projViews{};
     XrCompositionLayerProjection proj{XR_TYPE_COMPOSITION_LAYER_PROJECTION};
-    XrCompositionLayerQuad quadLayer{XR_TYPE_COMPOSITION_LAYER_QUAD};
+    std::array<XrCompositionLayerQuad, kQuadSlots> quadLayers{};
     XrCompositionLayerPassthroughFB ptLayer{XR_TYPE_COMPOSITION_LAYER_PASSTHROUGH_FB};
     std::vector<const XrCompositionLayerBaseHeader*> layers;
     XrEnvironmentBlendMode blendMode = XR_ENVIRONMENT_BLEND_MODE_OPAQUE;
@@ -1051,16 +1061,23 @@ void on_queue_submitted() {
         proj.views = projViews.data();
         layers.push_back(reinterpret_cast<const XrCompositionLayerBaseHeader*>(&proj));
     }
-    if (copied && withQuad) {
-        quadLayer.layerFlags = armed.quad.premultipliedAlpha ? XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT : 0;
-        quadLayer.space = armed.quad.space == QuadSpace::View ? g.viewSpace : g.appSpace;
-        quadLayer.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
-        quadLayer.subImage.swapchain = quad->swapchain.handle;
-        quadLayer.subImage.imageRect = {
-            {0, 0}, {static_cast<int32_t>(quad->swapchain.width), static_cast<int32_t>(quad->swapchain.height)}};
-        quadLayer.pose = to_xr(armed.quad.pose);
-        quadLayer.size = {armed.quad.width, armed.quad.height};
-        layers.push_back(reinterpret_cast<const XrCompositionLayerBaseHeader*>(&quadLayer));
+    for (int i = 0; i < kQuadSlots && copied; ++i) {
+        if (!withQuad[i]) {
+            continue;
+        }
+        const QuadLayer& q = armed.quad[i];
+        const QuadResources* res = armed.quadRes[i];
+        XrCompositionLayerQuad& layer = quadLayers[i];
+        layer = {XR_TYPE_COMPOSITION_LAYER_QUAD};
+        layer.layerFlags = q.premultipliedAlpha ? XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT : 0;
+        layer.space = q.space == QuadSpace::View ? g.viewSpace : g.appSpace;
+        layer.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
+        layer.subImage.swapchain = res->swapchain.handle;
+        layer.subImage.imageRect = {
+            {0, 0}, {static_cast<int32_t>(res->swapchain.width), static_cast<int32_t>(res->swapchain.height)}};
+        layer.pose = to_xr(q.pose);
+        layer.size = {q.width, q.height};
+        layers.push_back(reinterpret_cast<const XrCompositionLayerBaseHeader*>(&layer));
     }
 
     XrFrameEndInfo end{XR_TYPE_FRAME_END_INFO};
@@ -1082,31 +1099,33 @@ WGPUTextureView eye_target_view(int eye) {
     return (eye == 0 || eye == 1) && g.eyeTargets[eye] ? g.eyeTargets[eye].view : nullptr;
 }
 
-WGPUTextureView ensure_quad_target(uint32_t width, uint32_t height) {
-    if (g.session == XR_NULL_HANDLE || width == 0 || height == 0) {
+WGPUTextureView ensure_quad_target(int slot, uint32_t width, uint32_t height) {
+    if (g.session == XR_NULL_HANDLE || width == 0 || height == 0 || slot < 0 || slot >= kQuadSlots) {
         return nullptr;
     }
-    if (g.quad != nullptr && g.quad->swapchain.width == width && g.quad->swapchain.height == height) {
-        return g.quad->target.view;
+    QuadResources*& cur = g.quads[slot];
+    if (cur != nullptr && cur->swapchain.width == width && cur->swapchain.height == height) {
+        return cur->target.view;
     }
-    if (g.quad != nullptr) {
+    if (cur != nullptr) {
         std::lock_guard lock{g.frameMutex};
-        g.retiredQuads.emplace_back(g.nextId, g.quad);
-        g.quad = nullptr;
+        g.retiredQuads.emplace_back(g.nextId, cur);
+        cur = nullptr;
     }
     auto* q = new QuadResources();
     if (!create_swapchain(q->swapchain, width, height) ||
-        !d3d::create_captured_texture(g.device, g.d3dDevice.Get(), width, height, g.targetFormat, "VR quad", q->target))
+        !d3d::create_captured_texture(g.device, g.d3dDevice.Get(), width, height, g.targetFormat,
+            slot == kQuadUi ? "VR UI quad" : "VR quad", q->target))
     {
         destroy_quad(q);
         return nullptr;
     }
     std::lock_guard lock{g.frameMutex};
-    g.quad = q;
+    cur = q;
     return q->target.view;
 }
 
-void* quad_token() { return g.quad; }
+void* quad_token(int slot) { return slot >= 0 && slot < kQuadSlots ? g.quads[slot] : nullptr; }
 
 void simulation_readback_once() {
     // Sample well after the scene has faded in (the first stereo frames are a black load screen).

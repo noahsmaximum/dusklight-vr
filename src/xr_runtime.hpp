@@ -28,6 +28,11 @@ enum class QuadSpace : uint8_t {
     View, // head-locked
 };
 
+// Quad layer slots, submitted in this order (later ones on top).
+constexpr int kQuadSlots = 2;
+constexpr int kQuadHud = 0; // game HUD / menus / cinema screen
+constexpr int kQuadUi = 1;  // Dusklight's own UI (RmlUi)
+
 struct QuadLayer {
     bool enabled = false;
     QuadSpace space = QuadSpace::App;
@@ -78,7 +83,8 @@ void abandon_frame(uint64_t id);
 void begin_frame(uint64_t id);
 // quadToken identifies the quad resources the frame was rendered into (quad_token()).
 // seeThrough: the eye images carry premultiplied alpha to show the real world behind them.
-void arm_submit(uint64_t id, bool stereo, bool seeThrough, const QuadLayer& quad, void* quadToken);
+void arm_submit(uint64_t id, bool stereo, bool seeThrough, const QuadLayer (&quads)[kQuadSlots],
+    void* const (&quadTokens)[kQuadSlots]);
 void on_queue_submitted();
 
 // Render targets (Dawn textures backed by capturable D3D12 resources) ------------------------------
@@ -88,9 +94,9 @@ uint32_t eye_height();
 WGPUTextureFormat target_format();
 // Game-thread snapshot of the render targets for this frame (views are borrowed).
 WGPUTextureView eye_target_view(int eye);
-// Ensures the quad target exists with the given size (game thread). Returns its view or null.
-WGPUTextureView ensure_quad_target(uint32_t width, uint32_t height);
-void* quad_token();
+// Ensures the quad target of `slot` exists with the given size (game thread). Returns its view or null.
+WGPUTextureView ensure_quad_target(int slot, uint32_t width, uint32_t height);
+void* quad_token(int slot);
 
 // Debug: fake stereo views used when no headset is present (simulateHmd).
 // pitchDeg tilts the fake head (negative looks down).

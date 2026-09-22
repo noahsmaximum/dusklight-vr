@@ -32,14 +32,10 @@ constexpr const char* kShader = VR_FULLSCREEN_VS R"(
     return vec4f(textureSample(tex0, samp, in.uv).rgb, 1.0);
 }
 
-// Premultiplied tabletop image over a solid key colour (for chroma-key passthrough).
-@fragment fn fs_key_green(in: VsOut) -> @location(0) vec4f {
+@fragment fn fs_key(in: VsOut) -> @location(0) vec4f {
     let c = textureSample(tex0, samp, in.uv);
-    return vec4f(c.rgb + (1.0 - c.a) * vec3f(0.0, 1.0, 0.0), 1.0);
-}
-@fragment fn fs_key_magenta(in: VsOut) -> @location(0) vec4f {
-    let c = textureSample(tex0, samp, in.uv);
-    return vec4f(c.rgb + (1.0 - c.a) * vec3f(1.0, 0.0, 1.0), 1.0);
+    let key = textureLoad(tex1, vec2i(0, 0), 0).rgb; // 1x1 key colour texture
+    return vec4f(c.rgb + (1.0 - c.a) * key, 1.0);
 }
 
 @fragment fn fs_blit_alpha(in: VsOut) -> @location(0) vec4f {
@@ -106,7 +102,7 @@ struct Cut {
 }
 )";
 
-enum class Kind { Blit, BlitAlpha, KeyGreen, KeyMagenta, Combine, CombineOver, ClearBlackRev, ClearBlackStd, ClearWhiteRev, ClearWhiteStd, Cut };
+enum class Kind { Blit, BlitAlpha, Key, Combine, CombineOver, ClearBlackRev, ClearBlackStd, ClearWhiteRev, ClearWhiteStd, Cut };
 
 struct State {
     WGPUDevice device = nullptr;
@@ -116,6 +112,11 @@ struct State {
     WGPUPipelineLayout layout = nullptr;
     WGPUTextureView dummyView = nullptr;
     WGPUTexture dummy = nullptr;
+    // Tabletop key colour as a 1x1 texture (shares the blit bind group layout).
+    WGPUTexture keyTex = nullptr;
+    WGPUTextureView keyView = nullptr;
+    uint32_t keyColor = 0xFFFFFFFF; // forces the first upload
+    WGPUQueue queue = nullptr;
     std::mutex mutex;
     // Offscreen-target pipelines keyed by (format, kind); scene pipelines keyed by (layout key, kind).
     std::unordered_map<uint64_t, WGPURenderPipeline> targetPipelines;
@@ -146,10 +147,8 @@ const char* entry_for(Kind k) {
     switch (k) {
     case Kind::Blit:
         return "fs_blit";
-    case Kind::KeyGreen:
-        return "fs_key_green";
-    case Kind::KeyMagenta:
-        return "fs_key_magenta";
+    case Kind::Key:
+        return "fs_key";
     case Kind::BlitAlpha:
         return "fs_blit_alpha";
     case Kind::Cut:
@@ -404,6 +403,10 @@ bool initialize(WGPUDevice device) {
     td.format = WGPUTextureFormat_RGBA8Unorm;
     g.dummy = wgpuDeviceCreateTexture(device, &td);
     g.dummyView = wgpuTextureCreateView(g.dummy, nullptr);
+    td.usage = WGPUTextureUsage_TextureBinding | WGPUTextureUsage_CopyDst;
+    g.keyTex = wgpuDeviceCreateTexture(device, &td);
+    g.keyView = wgpuTextureCreateView(g.keyTex, nullptr);
+    g.queue = wgpuDeviceGetQueue(device);
 
     // Tabletop cut: unfilterable R32Float depth snapshot + a uniform range from push_uniform.
     WGPUShaderSourceWGSL cutWgsl = WGPU_SHADER_SOURCE_WGSL_INIT;
@@ -478,6 +481,12 @@ void shutdown() {
     g.scenePipelines.clear();
     if (g.dummyView) wgpuTextureViewRelease(g.dummyView);
     if (g.dummy) wgpuTextureRelease(g.dummy);
+    if (g.keyView) wgpuTextureViewRelease(g.keyView);
+    if (g.keyTex) wgpuTextureRelease(g.keyTex);
+    if (g.queue) wgpuQueueRelease(g.queue);
+    g.keyView = nullptr;
+    g.keyTex = nullptr;
+    g.queue = nullptr;
     if (g.cutLayout) wgpuPipelineLayoutRelease(g.cutLayout);
     if (g.cutBgl) wgpuBindGroupLayoutRelease(g.cutBgl);
     if (g.cutModule) wgpuShaderModuleRelease(g.cutModule);
@@ -500,15 +509,29 @@ void shutdown() {
 bool reversed_z() { return g.reversedZ; }
 
 void blit(WGPUCommandEncoder encoder, WGPUTextureView src, WGPUTextureView dst, WGPUTextureFormat dstFormat,
-    BlitMode mode) {
+    BlitMode mode, uint32_t keyColor) {
     if (src == nullptr || dst == nullptr) {
         return;
     }
-    const Kind kind = mode == BlitMode::KeepAlpha ? Kind::BlitAlpha
-                      : mode == BlitMode::KeyGreen ? Kind::KeyGreen
-                      : mode == BlitMode::KeyMagenta ? Kind::KeyMagenta
-                                                      : Kind::Blit;
-    WGPUBindGroup bg = make_bind_group(src, nullptr);
+    WGPUTextureView second = nullptr;
+    if (mode == BlitMode::Key && g.keyView != nullptr) {
+        if (keyColor != g.keyColor) {
+            // Ordered before this frame's submit, which is when the encoder runs.
+            const uint8_t px[4] = {static_cast<uint8_t>(keyColor >> 16), static_cast<uint8_t>(keyColor >> 8),
+                static_cast<uint8_t>(keyColor), 255};
+            WGPUTexelCopyTextureInfo dstInfo = WGPU_TEXEL_COPY_TEXTURE_INFO_INIT;
+            dstInfo.texture = g.keyTex;
+            WGPUTexelCopyBufferLayout layout = WGPU_TEXEL_COPY_BUFFER_LAYOUT_INIT;
+            layout.bytesPerRow = 256;
+            layout.rowsPerImage = 1;
+            const WGPUExtent3D size{1, 1, 1};
+            wgpuQueueWriteTexture(g.queue, &dstInfo, px, sizeof(px), &layout, &size);
+            g.keyColor = keyColor;
+        }
+        second = g.keyView;
+    }
+    const Kind kind = mode == BlitMode::KeepAlpha ? Kind::BlitAlpha : mode == BlitMode::Key ? Kind::Key : Kind::Blit;
+    WGPUBindGroup bg = make_bind_group(src, second);
     encode_target_pass(encoder, dst, target_pipeline(dstFormat, kind), bg,
         WGPUColor{0, 0, 0, mode == BlitMode::KeepAlpha ? 0.0 : 1.0});
     wgpuBindGroupRelease(bg);

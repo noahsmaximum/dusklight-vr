@@ -21,11 +21,10 @@ bool reversed_z();
 enum class BlitMode {
     Opaque,     // alpha forced to 1
     KeepAlpha,  // tabletop with a see-through runtime (premultiplied, black where transparent)
-    KeyGreen,   // tabletop, transparent areas filled with a chroma-key colour
-    KeyMagenta,
+    Key,        // tabletop, transparent areas filled with a solid (chroma-key) colour
 };
 void blit(WGPUCommandEncoder encoder, WGPUTextureView src, WGPUTextureView dst, WGPUTextureFormat dstFormat,
-    BlitMode mode = BlitMode::Opaque);
+    BlitMode mode = BlitMode::Opaque, uint32_t keyColor = 0); // keyColor: 0xRRGGBB for BlitMode::Key
 void combine_hud(WGPUCommandEncoder encoder, WGPUTextureView black, WGPUTextureView white, WGPUTextureView dst,
     WGPUTextureFormat dstFormat);
 

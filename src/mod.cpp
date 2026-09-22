@@ -29,7 +29,8 @@ UiElementHandle g_frameText = 0;
 
 const char* const kModes[] = {"Off", "Stereo (6DOF)", "Cinema screen", "Tabletop"};
 const char* const kHudFollow[] = {"Smooth follow", "Head-locked", "Fixed in world"};
-const char* const kKeyColors[] = {"Black", "Green (chroma key)", "Magenta (chroma key)"};
+// Chroma-key friendly presets for the tabletop background.
+const char* const kKeyColors[] = {"000000", "00FF00", "FF00FF", "0000FF"};
 
 void add_toggle(UiElementHandle pane, const char* label, ConfigVarHandle var) {
     UiControlDesc c = UI_CONTROL_DESC_INIT;
@@ -78,6 +79,16 @@ ModResult build_panel(ModContext*, UiElementHandle pane, void*, ModError*) {
     recenter.on_pressed = [](ModContext*, void*) { vr::xr::request_recenter(); };
     svc_ui->pane_add_control(mod_ctx, pane, &recenter, nullptr);
 
+    svc_ui->pane_add_section(mod_ctx, pane, "Presets");
+    for (size_t i = 0; i < vr::preset_count(); ++i) {
+        UiControlDesc p = UI_CONTROL_DESC_INIT;
+        p.kind = UI_CONTROL_BUTTON;
+        p.label = vr::preset_name(i);
+        p.user_data = reinterpret_cast<void*>(i);
+        p.on_pressed = [](ModContext*, void* index) { vr::apply_preset(reinterpret_cast<size_t>(index)); };
+        svc_ui->pane_add_control(mod_ctx, pane, &p, nullptr);
+    }
+
     svc_ui->pane_add_section(mod_ctx, pane, "View");
     add_dropdown(pane, "VR mode", g_vars.mode, kModes, 4);
     add_number(pane, "World scale", g_vars.unitsPerMeter, 10, 1000, 5, " units/m");
@@ -90,14 +101,27 @@ ModResult build_panel(ModContext*, UiElementHandle pane, void*, ModError*) {
     svc_ui->pane_add_section(mod_ctx, pane, "Tabletop");
     add_number(pane, "Scale 1:", g_vars.tableScale, 2, 1000, 5, "");
     add_number(pane, "Table height (from eyes)", g_vars.tableHeightCm, -200, 50, 5, " cm");
-    add_number(pane, "Table distance", g_vars.tableDistanceCm, 0, 300, 5, " cm");
+    add_number(pane, "Table position X (right)", g_vars.tableOffsetXCm, -300, 300, 5, " cm");
+    add_number(pane, "Table position Y (forward)", g_vars.tableDistanceCm, 0, 300, 5, " cm");
+    add_number(pane, "Table rotation", g_vars.tableYawDeg, -180, 180, 5, " deg");
     add_number(pane, "Visible radius", g_vars.tableRadiusCm, 5, 500, 5, " cm");
     add_number(pane, "Visible depth below table", g_vars.tableDepthCm, 0, 500, 5, " cm");
     add_toggle(pane, "See-through background (passthrough)", g_vars.tablePassthrough);
     add_toggle(pane, "Turn with the game camera", g_vars.tableFollowYaw);
-    add_dropdown(pane, "Background without passthrough", g_vars.tableKeyColor, kKeyColors, 3);
+    {
+        UiControlDesc c = UI_CONTROL_DESC_INIT;
+        c.kind = UI_CONTROL_COLOR;
+        c.label = "Background without passthrough";
+        c.help_rml = "Fills the empty space around the diorama when the headset runtime cannot show your room. Pick a chroma-key colour if you use a chroma-key passthrough tool.";
+        c.binding = UI_BINDING_CONFIG_VAR;
+        c.config_var = g_vars.tableKeyColor;
+        c.color_presets = kKeyColors;
+        c.color_preset_count = 4;
+        svc_ui->pane_add_control(mod_ctx, pane, &c, nullptr);
+    }
 
     svc_ui->pane_add_section(mod_ctx, pane, "HUD & menus");
+    add_toggle(pane, "Show Dusklight menus in the headset", g_vars.showDuskUi);
     add_dropdown(pane, "HUD placement", g_vars.hudFollow, kHudFollow, 3);
     add_number(pane, "HUD distance", g_vars.hudDistanceCm, 30, 1000, 5, " cm");
     add_number(pane, "HUD width", g_vars.hudWidthCm, 20, 1000, 5, " cm");

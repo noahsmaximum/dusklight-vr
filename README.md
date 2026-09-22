@@ -12,6 +12,8 @@ OpenXR VR for [Dusklight](https://github.com/TwilitRealm/dusklight) 2.0 as a sel
   The HUD follows your head lazily; pause menus lock in place in front of you; 2D-only screens (title,
   file select) become a large virtual screen.
 - **Cinema mode**: the flat game on a big world-locked screen.
+- **Presets** for each mode (comfort / performance, living room / IMAX, desk / coffee table / floor).
+- **Dusklight's own menus** (settings, mod manager) appear on a panel in the headset.
 - **Tabletop mode**: the world as a small diorama on your real table (scale 1:50 by default), with
   the sky see-through so your room shows around it (passthrough, where the runtime supports it).
 - Frames are paced by the headset (`xrWaitFrame`) and rendered through Dusklight's frame interpolation,

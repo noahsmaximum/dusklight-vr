@@ -23,6 +23,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <cstdlib>
 #include <cstring>
 #include <mutex>
 #include <string_view>
@@ -57,6 +58,21 @@ DEFINE_HOOK_SYMBOL("src/d/d_camera.cpp#widezoom_correction", void(void*, f32), W
 DEFINE_HOOK_SYMBOL("dKy_bg_MAxx_proc", void(void*), BgMaterialProc);
 // View-projection texture matrices (J3D modes 3/9): effect matrix x view x model.
 DEFINE_HOOK_SYMBOL("?calcTexMtx@J3DTexMtx@@QEAAXQEAY03$$CBM@Z", void(J3DTexMtx*, const f32 (*)[4]), CalcTexMtx);
+
+// Dusklight's own UI (RmlUi) renders into aurora::rmlui::s_renderTarget during aurora_end_frame.
+// record_frame returns {bind group (null when nothing was drawn), overlay}; mirrored layouts below.
+struct RmlRecordedFrame {
+    void* bindGroup;
+    bool overlay;
+};
+struct RmlRenderTarget { // aurora::webgpu::TextureWithSampler
+    WGPUTexture texture;
+    WGPUTextureView view;
+    WGPUExtent3D size;
+    WGPUTextureFormat format;
+    WGPUSampler sampler;
+};
+DEFINE_HOOK_SYMBOL("aurora::rmlui::record_frame", RmlRecordedFrame(const void*), RmlRecordFrame);
 
 namespace vr::render {
 namespace {
@@ -93,15 +109,19 @@ struct Packet {
     bool tabletop = false;   // eye images carry alpha
     bool seeThrough = false; // ...and the runtime should show the room behind them
     gpu::BlitMode eyeBlit = gpu::BlitMode::Opaque;
+    uint32_t keyColor = 0;
     std::array<WGPUTextureView, 2> scene{};
     std::array<WGPUTextureView, 2> hud{};
     WGPUTextureView mono = nullptr;
     std::array<WGPUTextureView, 2> eyeTargets{};
-    WGPUTextureView quadTarget = nullptr;
-    void* quadToken = nullptr;
+    std::array<WGPUTextureView, xr::kQuadSlots> quadTargets{};
+    void* quadTokens[xr::kQuadSlots] = {};
     WGPUTextureFormat targetFormat = WGPUTextureFormat_Undefined;
-    xr::QuadLayer quad;
+    xr::QuadLayer quads[xr::kQuadSlots] = {};
+    WGPUTextureView ui = nullptr; // Dusklight UI snapshot (owned reference, released by the worker)
 };
+void prepare_ui_quad(Packet& p);
+
 struct PacketRef {
     uint32_t slot;
     uint64_t seq;
@@ -129,6 +149,10 @@ bool g_rerunningCallbacks = false;
 // Models passed to dKy_bg_MAxx_proc by this frame's actor draws (cleared after the painter).
 std::vector<void*> g_bgModels;
 
+// Dusklight UI state from the last aurora_end_frame (game thread).
+const RmlRenderTarget* g_rmlTarget = nullptr;
+bool g_rmlDrew = false;
+
 // Placement state for the head-following HUD and world-locked menus.
 struct Placement {
     bool init = false;
@@ -137,6 +161,8 @@ struct Placement {
     bool hudTurning = false;
     bool menuWasOpen = false;
     Pose menuPose;
+    bool uiWasOpen = false;
+    Pose uiPose;
 };
 Placement g_place;
 
@@ -357,8 +383,9 @@ Mtx34 table_transform(const Mtx34& gameView, const ViewBackup& base) {
         }
     }
 
-    const Vec3 tablePos{0.0f, cfg.tableHeight * s, -cfg.tableDistance * s};
-    return mul(translation34(tablePos), mul(rot_y34(g_table.align), translation34(g_table.anchor * -1.0f)));
+    const Vec3 tablePos{cfg.tableOffsetX * s, cfg.tableHeight * s, -cfg.tableDistance * s};
+    const float yaw = g_table.align + cfg.tableYawDeg * kPi / 180.0f;
+    return mul(translation34(tablePos), mul(rot_y34(yaw), translation34(g_table.anchor * -1.0f)));
 }
 
 // Uniforms for the cut shader of one eye, from the view/projection apply_eye just wrote.
@@ -511,13 +538,22 @@ void finish_compute(ModContext*, const GfxComputeContext* ctx, const void* paylo
     {
         std::lock_guard lock{g_packetMutex};
         p = g_packets[ref.slot];
+        if (p.seq != ref.seq) {
+            return;
+        }
+        g_packets[ref.slot].ui = nullptr; // this callback owns the UI view reference now
     }
-    if (p.seq != ref.seq) {
-        return;
-    }
+    struct ReleaseUi {
+        WGPUTextureView view;
+        ~ReleaseUi() {
+            if (view != nullptr) {
+                wgpuTextureViewRelease(view);
+            }
+        }
+    } releaseUi{p.ui};
     if (p.stereo) {
         for (int eye = 0; eye < 2; ++eye) {
-            gpu::blit(ctx->encoder, p.scene[eye], p.eyeTargets[eye], p.targetFormat, p.eyeBlit);
+            gpu::blit(ctx->encoder, p.scene[eye], p.eyeTargets[eye], p.targetFormat, p.eyeBlit, p.keyColor);
         }
         static bool logged = false;
         if (!logged) {
@@ -525,16 +561,22 @@ void finish_compute(ModContext*, const GfxComputeContext* ctx, const void* paylo
             mods::log::info("First eye composition encoded on the render worker");
         }
     }
-    if (p.quad.enabled && p.quadTarget != nullptr) {
+    const WGPUTextureView hudTarget = p.quadTargets[xr::kQuadHud];
+    if (p.quads[xr::kQuadHud].enabled && hudTarget != nullptr) {
         if (p.hud[0] != nullptr && p.hud[1] != nullptr) {
-            gpu::combine_hud(ctx->encoder, p.hud[0], p.hud[1], p.quadTarget, p.targetFormat);
+            gpu::combine_hud(ctx->encoder, p.hud[0], p.hud[1], hudTarget, p.targetFormat);
         } else if (p.mono != nullptr) {
-            gpu::blit(ctx->encoder, p.mono, p.quadTarget, p.targetFormat);
+            gpu::blit(ctx->encoder, p.mono, hudTarget, p.targetFormat);
         }
+    }
+    const WGPUTextureView uiTarget = p.quadTargets[xr::kQuadUi];
+    if (p.quads[xr::kQuadUi].enabled && uiTarget != nullptr && p.ui != nullptr) {
+        // RmlUi renders premultiplied (transparent where there is no UI).
+        gpu::blit(ctx->encoder, p.ui, uiTarget, p.targetFormat, gpu::BlitMode::KeepAlpha);
     }
     g_workerThread.store(GetCurrentThreadId(), std::memory_order_release);
     if (p.xrId != 0) {
-        xr::arm_submit(p.xrId, p.stereo, p.seeThrough, p.quad, p.quadToken);
+        xr::arm_submit(p.xrId, p.stereo, p.seeThrough, p.quads, p.quadTokens);
     } else if (p.stereo) {
         g_simulationArmed.store(true, std::memory_order_release);
     }
@@ -1002,28 +1044,33 @@ HookAction end_frame_pre(ModContext*, void*, void*, void*) {
     if (f.tabletop) {
         // Runtimes without passthrough / alpha blending show the transparent area opaque: black, or a
         // chroma-key colour for passthrough tools that key it out.
-        const int key = xr::see_through_available() && config().tablePassthrough ? 0 : config().tableKeyColor;
-        p.eyeBlit = key == 1 ? gpu::BlitMode::KeyGreen : key == 2 ? gpu::BlitMode::KeyMagenta : gpu::BlitMode::KeepAlpha;
+        const bool seeThrough = xr::see_through_available() && config().tablePassthrough;
+        p.eyeBlit = seeThrough ? gpu::BlitMode::KeepAlpha : gpu::BlitMode::Key;
+        p.keyColor = config().tableKeyColor;
     }
     p.scene = f.scene;
     p.hud = f.hud;
     p.mono = f.mono;
-    p.quad = f.quad;
+    p.quads[xr::kQuadHud] = f.quad;
     p.targetFormat = xr::target_format();
     p.eyeTargets = {xr::eye_target_view(0), xr::eye_target_view(1)};
-    if (p.quad.enabled && f.xrId != 0) {
+    if (p.quads[xr::kQuadHud].enabled && f.xrId != 0) {
         uint32_t w, h;
         efb_size(w, h);
-        p.quadTarget = xr::ensure_quad_target(w, h);
-        p.quadToken = xr::quad_token();
-        if (p.quadTarget == nullptr) {
-            p.quad.enabled = false;
+        p.quadTargets[xr::kQuadHud] = xr::ensure_quad_target(xr::kQuadHud, w, h);
+        p.quadTokens[xr::kQuadHud] = xr::quad_token(xr::kQuadHud);
+        if (p.quadTargets[xr::kQuadHud] == nullptr) {
+            p.quads[xr::kQuadHud].enabled = false;
         }
     } else {
-        p.quad.enabled = false;
+        p.quads[xr::kQuadHud].enabled = false;
     }
     if (p.xrId == 0 && !simulating) {
+        g_place.uiWasOpen = false;
         return HOOK_CONTINUE;
+    }
+    if (f.xrId != 0) {
+        prepare_ui_quad(p);
     }
 
     PacketRef ref{};
@@ -1032,12 +1079,67 @@ HookAction end_frame_pre(ModContext*, void*, void*, void*) {
         p.seq = ++g_packetSeq;
         ref.slot = static_cast<uint32_t>(p.seq % kPackets);
         ref.seq = p.seq;
+        if (g_packets[ref.slot].ui != nullptr) {
+            wgpuTextureViewRelease(g_packets[ref.slot].ui); // that packet was never picked up
+        }
         g_packets[ref.slot] = p;
     }
     if (const ModResult r = svc_gfx->push_compute(mod_ctx, g_finishCompute, &ref, sizeof(ref)); r != MOD_OK) {
         mods::log::error("push_compute(finish) failed ({})", static_cast<int>(r));
     }
     return HOOK_CONTINUE;
+}
+
+void rml_record_post(ModContext*, void*, void* retval, void*) {
+    g_rmlDrew = retval != nullptr && static_cast<const RmlRecordedFrame*>(retval)->bindGroup != nullptr;
+    static bool logged = false;
+    if (g_rmlDrew && !logged && g_rmlTarget != nullptr) {
+        logged = true;
+        mods::log::info("Dusklight UI target {}x{} format {} (view {})", g_rmlTarget->size.width,
+            g_rmlTarget->size.height, static_cast<int>(g_rmlTarget->format), static_cast<void*>(g_rmlTarget->view));
+    }
+}
+
+// Puts Dusklight's UI (settings, mod manager, ...) on its own quad, locked in front of the head when
+// it opens. The texture is last frame's (RmlUi renders after this frame's composition is queued).
+void prepare_ui_quad(Packet& p) {
+    const bool show = config().showDuskUi && g_rmlDrew && g_rmlTarget != nullptr && g_rmlTarget->view != nullptr &&
+                      g_rmlTarget->size.width != 0 && g_rmlTarget->size.height != 0;
+    if (!show) {
+        g_place.uiWasOpen = false;
+        return;
+    }
+    if (!f.info.viewsValid && !xr::locate_views(f.xrId, f.info)) {
+        return;
+    }
+    const uint32_t w = g_rmlTarget->size.width;
+    const uint32_t h = g_rmlTarget->size.height;
+    WGPUTextureView target = xr::ensure_quad_target(xr::kQuadUi, w, h);
+    if (target == nullptr) {
+        return;
+    }
+    const auto& cfg = config();
+    if (!g_place.uiWasOpen) {
+        Pose head;
+        head.position = (f.info.views[0].pose.position + f.info.views[1].pose.position) * 0.5f;
+        g_place.uiPose.orientation = quat_from_yaw(yaw_of(f.info.views[0].pose.orientation));
+        // A little in front of where game menus go, so it sits above them.
+        g_place.uiPose.position = head.position +
+                                  rotate(g_place.uiPose.orientation, Vec3{0.0f, -0.05f, -(cfg.menuDistance - 0.1f)});
+        g_place.uiWasOpen = true;
+    }
+    xr::QuadLayer& q = p.quads[xr::kQuadUi];
+    q.enabled = true;
+    q.space = xr::QuadSpace::App;
+    q.pose = g_place.uiPose;
+    q.width = cfg.menuWidth;
+    q.height = cfg.menuWidth * static_cast<float>(h) / static_cast<float>(w);
+    q.premultipliedAlpha = true;
+    p.quadTargets[xr::kQuadUi] = target;
+    p.quadTokens[xr::kQuadUi] = xr::quad_token(xr::kQuadUi);
+    // RmlUi may recreate the target (window resize) before the worker samples it; keep this view alive.
+    wgpuTextureViewAddRef(g_rmlTarget->view);
+    p.ui = g_rmlTarget->view;
 }
 
 template <class Entry>
@@ -1104,6 +1206,14 @@ bool install() {
     g_origQueueSubmit = reinterpret_cast<QueueSubmitFn>(orig);
 
     check<BgMaterialProc>(mods::hook::add_pre<BgMaterialProc>(bg_material_pre), "dKy_bg_MAxx_proc", false);
+    void* rmlTarget = nullptr;
+    if (mods::hook::add_post<RmlRecordFrame>(rml_record_post) == MOD_OK &&
+        svc_hook->resolve(mod_ctx, "aurora::rmlui::s_renderTarget", &rmlTarget, nullptr) == MOD_OK)
+    {
+        g_rmlTarget = static_cast<const RmlRenderTarget*>(rmlTarget);
+    } else {
+        mods::log::warn("Dusklight UI unavailable in the headset");
+    }
     check<CalcTexMtx>(mods::hook::add_pre<CalcTexMtx>(calc_tex_mtx_pre), "J3DTexMtx::calcTexMtx", false);
     check<CalcTexMtx>(mods::hook::add_post<CalcTexMtx>(calc_tex_mtx_post), "J3DTexMtx::calcTexMtx", false);
     // Without the widezoom guard the camera's callback would rewrite the eye view, so only use the

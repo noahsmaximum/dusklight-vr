@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 
 // Persistent user settings (ConfigService vars), cached into plain values each frame so hot paths
@@ -44,7 +45,10 @@ struct Config {
     float tableDepth = 0.15f;           // how far below the surface the world stays visible
     bool tablePassthrough = true;       // show the real room around the diorama when the runtime can
     bool tableFollowYaw = true;         // turn the diorama with the game camera (stick-up = away from you)
-    int tableKeyColor = 0;              // background when the runtime is opaque: 0 black, 1 green, 2 magenta
+    float tableOffsetX = 0.0f;          // table centre moved right (+) / left (-)
+    float tableYawDeg = 0.0f;           // diorama turned about the table centre (counter-clockwise +)
+    uint32_t tableKeyColor = 0x000000;  // background when the runtime is opaque (0xRRGGBB)
+    bool showDuskUi = true;             // Dusklight's own UI (settings, mod manager) on a panel in the headset
 
     bool mirrorHud = true;      // composite the HUD onto the desktop mirror
     bool simulateHmd = false;    // debug: run the stereo pipeline without a headset
@@ -57,5 +61,10 @@ const Config& config();
 bool register_config();
 // Refresh the cached values from ConfigService (cheap; call once per frame on the game thread).
 void refresh_config();
+
+// Presets: each sets a mode and the settings that matter for it (persisted like manual changes).
+size_t preset_count();
+const char* preset_name(size_t index);
+void apply_preset(size_t index);
 
 } // namespace vr

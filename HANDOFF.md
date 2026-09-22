@@ -123,6 +123,14 @@ How it works (see README "How it works" for the one-line version):
      - `C_MTXLightPerspective` (direct GX users: particles, rain effects) is rewritten from Pe, except during the re-run.
   Verified in simulation at Ordon Spring (`--stage F_SP104,1,0,-1`), Stereo and Tabletop.
 
+- **Dusklight UI in the headset**: post-hook `aurora::rmlui::record_frame` (drew anything?) + the
+  `aurora::rmlui::s_renderTarget` data symbol (layout mirrored as `RmlRenderTarget`). The view is AddRef'd
+  on the game thread and released by the worker; it is blitted premultiplied into quad slot `kQuadUi`, world-locked
+  in front of the head when UI opens (1 frame late: RmlUi renders after our composite is queued).
+- **Presets** (`vr_config.cpp` `kPresets`): buttons that set the mode plus its settings. **Key colour** is a
+  string var `tableKeyColorHex` (RRGGBB) bound to `UI_CONTROL_COLOR`, uploaded to a 1x1 texture for `fs_key`.
+  **Table X / rotation**: `tableOffsetXCm`, `tableYawDeg` (added to the camera-follow yaw).
+
 **Headset test checklist:**
 - The table sits roughly on a real surface. Adjust height/distance, then Recenter.
 - The room shows around the diorama. Check the status line for "see-through: passthrough / alpha blend". VD may
