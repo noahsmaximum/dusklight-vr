@@ -127,6 +127,10 @@ How it works (see README "How it works" for the one-line version):
   `aurora::rmlui::s_renderTarget` data symbol (layout mirrored as `RmlRenderTarget`). The view is AddRef'd
   on the game thread and released by the worker; it is blitted premultiplied into quad slot `kQuadUi`, world-locked
   in front of the head when UI opens (1 frame late: RmlUi renders after our composite is queued).
+  Menus with a backdrop blur make RmlUi render the whole scene as base layer; during a session a pre-hook on
+  `aurora::rmlui::WebGPURenderInterface::BeginFrame` forces `BaseLayerContent::Transparent` and the
+  `record_frame` post-hook flips `overlay` to true so the desktop still composites it over the scene
+  (`context_has_visible_backdrop_filter` and its helper are inlined; not hookable).
 - **Presets** (`vr_config.cpp` `kPresets`): buttons that set the mode plus its settings. **Key colour** is a
   string var `tableKeyColorHex` (RRGGBB) bound to `UI_CONTROL_COLOR`, uploaded to a 1x1 texture for `fs_key`.
   **Table X / rotation**: `tableOffsetXCm`, `tableYawDeg` (added to the camera-follow yaw).

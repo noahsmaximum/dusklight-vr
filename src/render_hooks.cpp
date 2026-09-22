@@ -73,6 +73,10 @@ struct RmlRenderTarget { // aurora::webgpu::TextureWithSampler
     WGPUSampler sampler;
 };
 DEFINE_HOOK_SYMBOL("aurora::rmlui::record_frame", RmlRecordedFrame(const void*), RmlRecordFrame);
+// With a visible backdrop filter (glass blur) RmlUi renders the whole scene as its base layer
+// (BaseLayerContent::Scene = 1) and record_frame reports overlay = false.
+DEFINE_HOOK_SYMBOL("aurora::rmlui::WebGPURenderInterface::BeginFrame", void(void*, const void*, const void*, int),
+    RmlBeginFrame);
 
 namespace vr::render {
 namespace {
@@ -1090,14 +1094,35 @@ HookAction end_frame_pre(ModContext*, void*, void*, void*) {
     return HOOK_CONTINUE;
 }
 
+bool g_rmlForcedOverlay = false; // this frame's RmlUi base layer was switched to transparent
+
 void rml_record_post(ModContext*, void*, void* retval, void*) {
-    g_rmlDrew = retval != nullptr && static_cast<const RmlRecordedFrame*>(retval)->bindGroup != nullptr;
+    auto* frame = static_cast<RmlRecordedFrame*>(retval);
+    g_rmlDrew = frame != nullptr && frame->bindGroup != nullptr;
+    if (frame != nullptr && g_rmlForcedOverlay) {
+        // The target now holds only the UI, so the desktop must composite it over the scene too.
+        frame->overlay = true;
+    }
+    g_rmlForcedOverlay = false;
     static bool logged = false;
     if (g_rmlDrew && !logged && g_rmlTarget != nullptr) {
         logged = true;
         mods::log::info("Dusklight UI target {}x{} format {} (view {})", g_rmlTarget->size.width,
             g_rmlTarget->size.height, static_cast<int>(g_rmlTarget->format), static_cast<void*>(g_rmlTarget->view));
     }
+}
+
+HookAction rml_begin_frame_pre(ModContext*, void* args, void*, void*) {
+    // In the headset only the UI itself belongs on its panel. Menus with a backdrop blur make RmlUi
+    // draw the whole scene underneath; render them as a transparent overlay instead (the blur then
+    // has nothing behind it, the panels keep their tint).
+    int& baseLayer = mods::arg_ref<int>(args, 3);
+    if (baseLayer != 0 && config().showDuskUi && config().mode != Mode::Off &&
+        (xr::session_running() || config().simulateHmd)) {
+        baseLayer = 0; // BaseLayerContent::Transparent
+        g_rmlForcedOverlay = true;
+    }
+    return HOOK_CONTINUE;
 }
 
 // Puts Dusklight's UI (settings, mod manager, ...) on its own quad, locked in front of the head when
@@ -1211,6 +1236,7 @@ bool install() {
         svc_hook->resolve(mod_ctx, "aurora::rmlui::s_renderTarget", &rmlTarget, nullptr) == MOD_OK)
     {
         g_rmlTarget = static_cast<const RmlRenderTarget*>(rmlTarget);
+        check<RmlBeginFrame>(mods::hook::add_pre<RmlBeginFrame>(rml_begin_frame_pre), "rmlui BeginFrame", false);
     } else {
         mods::log::warn("Dusklight UI unavailable in the headset");
     }
