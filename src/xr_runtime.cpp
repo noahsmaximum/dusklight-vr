@@ -821,6 +821,8 @@ void poll() {
 
 void set_see_through(bool want) { g.wantSeeThrough = want; }
 
+bool see_through_available() { return g.passthroughLayer != XR_NULL_HANDLE || g.hasAlphaBlend; }
+
 const char* see_through_mode() {
     if (g.passthroughLayer != XR_NULL_HANDLE) {
         return "passthrough";

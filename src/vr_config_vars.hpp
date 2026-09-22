@@ -27,6 +27,7 @@ struct ConfigVars {
     ConfigVarHandle tableDepthCm = 0;
     ConfigVarHandle tablePassthrough = 0;
     ConfigVarHandle tableFollowYaw = 0;
+    ConfigVarHandle tableKeyColor = 0;
     ConfigVarHandle mirrorHud = 0;
     ConfigVarHandle simulateHmd = 0;
     ConfigVarHandle renderScalePercent = 0;

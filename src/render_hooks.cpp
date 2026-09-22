@@ -47,6 +47,8 @@ DEFINE_HOOK_SYMBOL("?clip@J3DUClipper@@QEBAHPEAY03$$CBMPEAUVec@@1@Z", int(const 
 DEFINE_HOOK_SYMBOL("dComIfGd_drawOpaListSky", void(), DrawOpaSky);
 DEFINE_HOOK_SYMBOL("dComIfGd_drawXluListSky", void(), DrawXluSky);
 DEFINE_HOOK_SYMBOL("GXSetFog", void(GXFogType, f32, f32, f32, f32, GXColor), SetFog);
+// Screen-space projective texturing (water reflection/refraction) builds its texgen from the view's fovy/aspect.
+DEFINE_HOOK_SYMBOL("C_MTXLightPerspective", void(f32 (*)[4], f32, f32, f32, f32, f32, f32), LightPerspective);
 
 namespace vr::render {
 namespace {
@@ -69,6 +71,9 @@ struct Frame {
     xr::QuadLayer quad;
     bool tabletop = false; // diorama camera + cut applied this frame
     std::array<gpu::CutParams, 2> cut{};
+    // The current eye's projection and the symmetric fovy/aspect written into its view_class.
+    Mtx44f eyeProj;
+    f32 eyeFovy = 0.0f, eyeAspect = 0.0f;
 };
 Frame f;
 
@@ -79,6 +84,7 @@ struct Packet {
     bool stereo = false;
     bool tabletop = false;   // eye images carry alpha
     bool seeThrough = false; // ...and the runtime should show the room behind them
+    gpu::BlitMode eyeBlit = gpu::BlitMode::Opaque;
     std::array<WGPUTextureView, 2> scene{};
     std::array<WGPUTextureView, 2> hud{};
     WGPUTextureView mono = nullptr;
@@ -278,6 +284,9 @@ void apply_eye(view_class& v, const ViewBackup& base, const Mtx34& trackingFromW
     const float halfH = std::max(fov.tanRight, -fov.tanLeft);
     v.fovy = 2.0f * std::atan(halfV) * 180.0f / kPi;
     v.aspect = halfH / halfV;
+    f.eyeProj = proj;
+    f.eyeFovy = v.fovy;
+    f.eyeAspect = v.aspect;
 
     const Vec3 eyePos{inv.m[0][3], inv.m[1][3], inv.m[2][3]};
     const Vec3 fwd{-inv.m[0][2], -inv.m[1][2], -inv.m[2][2]};
@@ -493,7 +502,7 @@ void finish_compute(ModContext*, const GfxComputeContext* ctx, const void* paylo
     }
     if (p.stereo) {
         for (int eye = 0; eye < 2; ++eye) {
-            gpu::blit(ctx->encoder, p.scene[eye], p.eyeTargets[eye], p.targetFormat, p.tabletop);
+            gpu::blit(ctx->encoder, p.scene[eye], p.eyeTargets[eye], p.targetFormat, p.eyeBlit);
         }
         static bool logged = false;
         if (!logged) {
@@ -836,6 +845,37 @@ HookAction fog_pre(ModContext*, void* args, void*, void*) {
     return HOOK_CONTINUE;
 }
 
+void light_perspective_post(ModContext*, void* args, void*, void*) {
+    // Water samples a copy of the framebuffer through a texgen built from the camera's fovy/aspect.
+    // In an eye that symmetric frustum doesn't match the asymmetric one the geometry is drawn with,
+    // so the copy lands misregistered and repeats ("portal" water). Rebuild the matrix from the
+    // eye's real projection: s*q = scaleS*(P00*x + P02*z) - transS*z, q = -z.
+    if (f.eye < 0 || f.eyeFovy == 0.0f || mods::arg<f32>(args, 1) != f.eyeFovy ||
+        mods::arg<f32>(args, 2) != f.eyeAspect)
+    {
+        return;
+    }
+    f32(*m)[4] = mods::arg<f32(*)[4]>(args, 0);
+    const f32 scaleS = mods::arg<f32>(args, 3);
+    const f32 scaleT = mods::arg<f32>(args, 4);
+    const f32 transS = mods::arg<f32>(args, 5);
+    const f32 transT = mods::arg<f32>(args, 6);
+    const auto& p = f.eyeProj.m;
+    m[0][0] = scaleS * p[0][0];
+    m[0][1] = 0.0f;
+    m[0][2] = scaleS * p[0][2] - transS;
+    m[0][3] = 0.0f;
+    m[1][0] = 0.0f;
+    m[1][1] = scaleT * p[1][1];
+    m[1][2] = scaleT * p[1][2] - transT;
+    m[1][3] = 0.0f;
+    static bool logged = false;
+    if (!logged) {
+        logged = true;
+        mods::log::info("Corrected a screen-space (water) projection for the eye frustum");
+    }
+}
+
 HookAction end_frame_pre(ModContext*, void*, void*, void*) {
     if (!f.active) {
         return HOOK_CONTINUE;
@@ -847,6 +887,12 @@ HookAction end_frame_pre(ModContext*, void*, void*, void*) {
     p.stereo = f.scene[0] != nullptr && f.scene[1] != nullptr && (f.xrId != 0 || simulating);
     p.tabletop = f.tabletop;
     p.seeThrough = f.tabletop && config().tablePassthrough;
+    if (f.tabletop) {
+        // Runtimes without passthrough / alpha blending show the transparent area opaque: black, or a
+        // chroma-key colour for passthrough tools that key it out.
+        const int key = xr::see_through_available() && config().tablePassthrough ? 0 : config().tableKeyColor;
+        p.eyeBlit = key == 1 ? gpu::BlitMode::KeyGreen : key == 2 ? gpu::BlitMode::KeyMagenta : gpu::BlitMode::KeepAlpha;
+    }
     p.scene = f.scene;
     p.hud = f.hud;
     p.mono = f.mono;
@@ -918,6 +964,8 @@ bool install() {
     check<DrawOpaSky>(mods::hook::add_pre<DrawOpaSky>(sky_pre), "dComIfGd_drawOpaListSky", false);
     check<DrawXluSky>(mods::hook::add_pre<DrawXluSky>(sky_pre), "dComIfGd_drawXluListSky", false);
     check<SetFog>(mods::hook::add_pre<SetFog>(fog_pre), "GXSetFog", false);
+    check<LightPerspective>(
+        mods::hook::add_post<LightPerspective>(light_perspective_post), "C_MTXLightPerspective", false);
     if (!ok) {
         return false;
     }

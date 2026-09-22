@@ -62,6 +62,7 @@ bool register_config() {
     ok &= reg_int(g_vars.tableDepthCm, "tableDepthCm", 15);
     ok &= reg_bool(g_vars.tablePassthrough, "tablePassthrough", true);
     ok &= reg_bool(g_vars.tableFollowYaw, "tableFollowYaw", true);
+    ok &= reg_int(g_vars.tableKeyColor, "tableKeyColor", 0);
     ok &= reg_bool(g_vars.mirrorHud, "mirrorHud", true);
     ok &= reg_bool(g_vars.simulateHmd, "simulateHmd", false);
     ok &= reg_int(g_vars.renderScalePercent, "renderScalePercent", 100);
@@ -110,6 +111,7 @@ void refresh_config() {
     c.tableDepth = static_cast<float>(std::clamp<int64_t>(get_int(g_vars.tableDepthCm, 15), 0, 500)) / 100.0f;
     c.tablePassthrough = get_bool(g_vars.tablePassthrough, true);
     c.tableFollowYaw = get_bool(g_vars.tableFollowYaw, true);
+    c.tableKeyColor = static_cast<int>(std::clamp<int64_t>(get_int(g_vars.tableKeyColor, 0), 0, 2));
     c.mirrorHud = get_bool(g_vars.mirrorHud, true);
     c.simulateHmd = get_bool(g_vars.simulateHmd, false);
     c.renderScale = static_cast<float>(std::clamp<int64_t>(get_int(g_vars.renderScalePercent, 100), 50, 200)) / 100.0f;

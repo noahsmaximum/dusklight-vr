@@ -32,6 +32,16 @@ constexpr const char* kShader = VR_FULLSCREEN_VS R"(
     return vec4f(textureSample(tex0, samp, in.uv).rgb, 1.0);
 }
 
+// Premultiplied tabletop image over a solid key colour (for chroma-key passthrough).
+@fragment fn fs_key_green(in: VsOut) -> @location(0) vec4f {
+    let c = textureSample(tex0, samp, in.uv);
+    return vec4f(c.rgb + (1.0 - c.a) * vec3f(0.0, 1.0, 0.0), 1.0);
+}
+@fragment fn fs_key_magenta(in: VsOut) -> @location(0) vec4f {
+    let c = textureSample(tex0, samp, in.uv);
+    return vec4f(c.rgb + (1.0 - c.a) * vec3f(1.0, 0.0, 1.0), 1.0);
+}
+
 @fragment fn fs_blit_alpha(in: VsOut) -> @location(0) vec4f {
     return textureSample(tex0, samp, in.uv);
 }
@@ -96,7 +106,7 @@ struct Cut {
 }
 )";
 
-enum class Kind { Blit, BlitAlpha, Combine, CombineOver, ClearBlackRev, ClearBlackStd, ClearWhiteRev, ClearWhiteStd, Cut };
+enum class Kind { Blit, BlitAlpha, KeyGreen, KeyMagenta, Combine, CombineOver, ClearBlackRev, ClearBlackStd, ClearWhiteRev, ClearWhiteStd, Cut };
 
 struct State {
     WGPUDevice device = nullptr;
@@ -136,6 +146,10 @@ const char* entry_for(Kind k) {
     switch (k) {
     case Kind::Blit:
         return "fs_blit";
+    case Kind::KeyGreen:
+        return "fs_key_green";
+    case Kind::KeyMagenta:
+        return "fs_key_magenta";
     case Kind::BlitAlpha:
         return "fs_blit_alpha";
     case Kind::Cut:
@@ -486,13 +500,17 @@ void shutdown() {
 bool reversed_z() { return g.reversedZ; }
 
 void blit(WGPUCommandEncoder encoder, WGPUTextureView src, WGPUTextureView dst, WGPUTextureFormat dstFormat,
-    bool keepAlpha) {
+    BlitMode mode) {
     if (src == nullptr || dst == nullptr) {
         return;
     }
+    const Kind kind = mode == BlitMode::KeepAlpha ? Kind::BlitAlpha
+                      : mode == BlitMode::KeyGreen ? Kind::KeyGreen
+                      : mode == BlitMode::KeyMagenta ? Kind::KeyMagenta
+                                                      : Kind::Blit;
     WGPUBindGroup bg = make_bind_group(src, nullptr);
-    encode_target_pass(encoder, dst, target_pipeline(dstFormat, keepAlpha ? Kind::BlitAlpha : Kind::Blit), bg,
-        WGPUColor{0, 0, 0, keepAlpha ? 0.0 : 1.0});
+    encode_target_pass(encoder, dst, target_pipeline(dstFormat, kind), bg,
+        WGPUColor{0, 0, 0, mode == BlitMode::KeepAlpha ? 0.0 : 1.0});
     wgpuBindGroupRelease(bg);
 }
 

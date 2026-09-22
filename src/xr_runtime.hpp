@@ -62,6 +62,8 @@ void request_recenter();
 void set_see_through(bool want);
 // How see-through frames are presented: "passthrough", "alpha blend" or "none (opaque)".
 const char* see_through_mode();
+// Whether the runtime currently shows the room behind transparent eye pixels.
+bool see_through_available();
 
 // Frame loop ------------------------------------------------------------------------------------
 

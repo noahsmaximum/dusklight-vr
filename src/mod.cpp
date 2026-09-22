@@ -28,6 +28,7 @@ UiElementHandle g_frameText = 0;
 
 const char* const kModes[] = {"Off", "Stereo (6DOF)", "Cinema screen", "Tabletop"};
 const char* const kHudFollow[] = {"Smooth follow", "Head-locked", "Fixed in world"};
+const char* const kKeyColors[] = {"Black", "Green (chroma key)", "Magenta (chroma key)"};
 
 void add_toggle(UiElementHandle pane, const char* label, ConfigVarHandle var) {
     UiControlDesc c = UI_CONTROL_DESC_INIT;
@@ -93,6 +94,7 @@ ModResult build_panel(ModContext*, UiElementHandle pane, void*, ModError*) {
     add_number(pane, "Visible depth below table", g_vars.tableDepthCm, 0, 500, 5, " cm");
     add_toggle(pane, "See-through background (passthrough)", g_vars.tablePassthrough);
     add_toggle(pane, "Turn with the game camera", g_vars.tableFollowYaw);
+    add_dropdown(pane, "Background without passthrough", g_vars.tableKeyColor, kKeyColors, 3);
 
     svc_ui->pane_add_section(mod_ctx, pane, "HUD & menus");
     add_dropdown(pane, "HUD placement", g_vars.hudFollow, kHudFollow, 3);

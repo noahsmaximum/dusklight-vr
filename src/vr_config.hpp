@@ -44,6 +44,7 @@ struct Config {
     float tableDepth = 0.15f;           // how far below the surface the world stays visible
     bool tablePassthrough = true;       // show the real room around the diorama when the runtime can
     bool tableFollowYaw = true;         // turn the diorama with the game camera (stick-up = away from you)
+    int tableKeyColor = 0;              // background when the runtime is opaque: 0 black, 1 green, 2 magenta
 
     bool mirrorHud = true;      // composite the HUD onto the desktop mirror
     bool simulateHmd = false;    // debug: run the stereo pipeline without a headset

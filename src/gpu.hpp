@@ -18,9 +18,14 @@ void shutdown();
 bool reversed_z();
 
 // Render-worker side (inside a GfxService compute callback). `dst` must be target_format views.
-// keepAlpha copies the source alpha (tabletop); otherwise the result is opaque.
+enum class BlitMode {
+    Opaque,     // alpha forced to 1
+    KeepAlpha,  // tabletop with a see-through runtime (premultiplied, black where transparent)
+    KeyGreen,   // tabletop, transparent areas filled with a chroma-key colour
+    KeyMagenta,
+};
 void blit(WGPUCommandEncoder encoder, WGPUTextureView src, WGPUTextureView dst, WGPUTextureFormat dstFormat,
-    bool keepAlpha = false);
+    BlitMode mode = BlitMode::Opaque);
 void combine_hud(WGPUCommandEncoder encoder, WGPUTextureView black, WGPUTextureView white, WGPUTextureView dst,
     WGPUTextureFormat dstFormat);
 
