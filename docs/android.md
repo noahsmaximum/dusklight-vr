@@ -32,7 +32,8 @@ Run the **Android VR APK** workflow from the Actions tab (input: the Dusklight t
 throwaway key for sideloading, and uploads it as an artifact.
 
 Install it with `adb install -r dusklight-vr-edition-arm64.apk` or SideQuest. It installs alongside
-the official app only if the package name differs — right now it does not, so it replaces it.
+the official app (separate package name), so official saves and settings are untouched. The VR
+edition keeps its own game data, so point it at your ROM again on first run.
 
 ## How the frame handoff works on Android
 
