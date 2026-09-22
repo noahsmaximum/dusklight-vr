@@ -48,12 +48,23 @@ With the patch in place the mod needs no engine internals:
 
 ## Still to do
 
-- `interop_vulkan.cpp` (the above)
-- OpenXR loader init on Android (Java VM + activity, through JNI rather than SDL, which the release
-  build doesn't export)
-- Controllers: OpenXR input mapped onto a virtual gamepad
+- Controllers: OpenXR input mapped onto a virtual gamepad (Quest/Pico controllers are not gamepads)
 - Session lifecycle: focus loss, pause/resume, headset removal
+- First run on device: nothing here has run on a headset yet — only builds
 - Performance: rendering twice plus the HUD capture copies is expensive on mobile GPUs. Cinema mode
   (one flat image on a big screen) is the first target; stereo needs measurement.
+- `copy_to_swapchains` waits on a fence before handing the targets back to Dawn; replacing that with
+  an exported sync-fd semaphore removes a per-frame CPU stall.
 - Not available on Android: the headset render-size override and the Dusklight UI panel, which both
-  use Aurora internals.
+  use Aurora internals the release build doesn't export.
+
+## Building the mod for Android
+
+CI builds `android-aarch64` alongside Windows, and the combined `.dusk` carries both. Locally:
+
+```
+cmake -B build-android -G Ninja \
+  -DCMAKE_TOOLCHAIN_FILE=$ANDROID_HOME/ndk/29.0.14206865/build/cmake/android.toolchain.cmake \
+  -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-28
+cmake --build build-android
+```
