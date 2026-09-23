@@ -411,7 +411,6 @@ bool enumerate_swapchain_images(uint64_t swapchain, std::vector<SwapchainImage>&
 }
 
 bool create_target(uint32_t width, uint32_t height, WGPUTextureFormat format, const char* label, Target& out) {
-    mods::log::info("mark: create_target {} {}x{}", label, width, height);
     destroy_target(out);
     auto* native = new TargetNative();
 
@@ -547,11 +546,6 @@ void destroy_target(Target& target) {
 }
 
 bool copy_to_swapchains(const std::vector<CopyJob>& jobs) {
-    static bool _first = true;
-    if (_first) {
-        _first = false;
-        mods::log::info("mark: first copy_to_swapchains ({} jobs)", jobs.size());
-    }
     if (jobs.empty() || g.vkDevice == VK_NULL_HANDLE) {
         return false;
     }

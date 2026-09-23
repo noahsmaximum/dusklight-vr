@@ -144,16 +144,6 @@ struct Frame {
     f32 eyeFovy = 0.0f, eyeAspect = 0.0f;
 };
 Frame f;
-// Temporary first-time markers for the Android bring-up.
-#define VR_MARK(name)                                                                              \
-    do {                                                                                           \
-        static bool _seen = false;                                                                 \
-        if (!_seen) {                                                                              \
-            _seen = true;                                                                          \
-            mods::log::info("mark: {}", name);                                                     \
-        }                                                                                          \
-    } while (0)
-
 
 // Handed to the render worker through a compute payload (the payload itself carries only the slot).
 struct Packet {
@@ -342,7 +332,6 @@ struct Timing {
     int64_t lastFrameStart = 0;
 };
 Timing g_timing;
-int64_t g_perfEndFrameAt = 0; // TEMP(android perf)
 
 int64_t now_ticks() {
     return std::chrono::steady_clock::now().time_since_epoch().count();
@@ -671,14 +660,12 @@ xr::QuadLayer place_quad(bool menuOpen, bool screen) {
 // --- Worker-side callbacks --------------------------------------------------------------------------
 
 void begin_compute(ModContext*, const GfxComputeContext*, const void* payload, size_t size, void*) {
-    VR_MARK("begin_compute");
     if (size == sizeof(uint64_t)) {
         xr::begin_frame(*static_cast<const uint64_t*>(payload));
     }
 }
 
 void finish_compute(ModContext*, const GfxComputeContext* ctx, const void* payload, size_t size, void*) {
-    VR_MARK("finish_compute");
     if (size != sizeof(PacketRef)) {
         return;
     }
@@ -736,7 +723,6 @@ void finish_compute(ModContext*, const GfxComputeContext* ctx, const void* paylo
 // Runs on the render worker right after the frame's command buffer was submitted: copy the eye/quad
 // targets into the XR swapchains and end the XR frame.
 void frame_submitted() {
-    VR_MARK("frame_submitted");
     static bool logged = false;
     if (!logged) {
         logged = true;
@@ -840,22 +826,7 @@ void window_size_post(ModContext*, void*, void* retval, void*) {
 }
 
 HookAction begin_frame_pre(ModContext*, void*, void*, void*) {
-    VR_MARK("begin_frame_pre");
     const int64_t start = now_ticks();
-    // TEMP(android perf): where the frame goes. gameMs = begin_frame_pre -> end_frame_pre (sim +
-    // recording), tailMs = end_frame_pre -> next begin_frame_pre (Aurora end_frame + anything after).
-    {
-        static int64_t s_lastLog = 0;
-        static double s_gameMs = 0.0, s_tailMs = 0.0;
-        if (g_perfEndFrameAt != 0 && g_timing.lastFrameStart != 0) {
-            smooth(s_tailMs, ticks_to_ms(start - g_perfEndFrameAt));
-            smooth(s_gameMs, ticks_to_ms(g_perfEndFrameAt - g_timing.lastFrameStart));
-        }
-        if (ticks_to_ms(start - s_lastLog) > 5000.0) {
-            s_lastLog = start;
-            mods::log::info("PERF {} | game {:.1f} ms, tail {:.1f} ms", status(), s_gameMs, s_tailMs);
-        }
-    }
     if (g_timing.lastFrameStart != 0) {
         smooth(g_timing.frameMs, ticks_to_ms(start - g_timing.lastFrameStart));
     }
@@ -973,13 +944,6 @@ void end_hud_capture() {
 }
 
 void painter_replace(ModContext*, void*, void* retval, void*) {
-    VR_MARK("painter");
-    static int depth = 0;
-    ++depth;
-    if (depth <= 4) {
-        mods::log::info("painter depth {}", depth);
-        std::fflush(stdout);
-    }
     // Recorded by this frame's actor draws; the next frame's draws record them again (and models
     // can be deleted by the simulation in between).
     struct ClearBgModels {
@@ -1039,7 +1003,6 @@ void painter_replace(ModContext*, void*, void* retval, void*) {
         }
     }
 
-    VR_MARK("stereo loop");
     const int64_t paintStart = now_ticks();
     for (int eye = 0; eye < 2; ++eye) {
         f.eye = eye;
@@ -1060,7 +1023,6 @@ void painter_replace(ModContext*, void*, void* retval, void*) {
         f.scene[eye] = resolve_color();
     }
     f.eye = -1;
-    --depth;
     smooth(g_timing.painterMs, ticks_to_ms(now_ticks() - paintStart));
     if (cam != nullptr) {
         restore_view(cam->view, backup);
@@ -1245,7 +1207,6 @@ void calc_tex_mtx_post(ModContext*, void* args, void*, void*) {
 }
 
 HookAction end_frame_pre(ModContext*, void*, void*, void*) {
-    g_perfEndFrameAt = now_ticks(); // TEMP(android perf)
     if (!f.active) {
         return HOOK_CONTINUE;
     }
