@@ -21,11 +21,17 @@ So we build Dusklight ourselves with an additive patch (`android/patch-dusklight
    Quest/Pico device metadata, and the runtime-broker `queries` entry the OpenXR loader needs.
 2. **Aurora** (`lib/webgpu/gpu.cpp`): request Dawn's shared-texture/shared-fence features when the
    GPU offers them (AHardwareBuffer, dma-buf, opaque FD, sync FD).
+3. **Exports** (`cmake/AndroidExports.cmake`): keep Aurora's symbols in the export list, so the mod
+   can hook frame delivery, the RmlUi panel and the render size by name as it does on Windows.
+4. **App identity**: own package name and label, so it installs beside the official app.
 
 Nothing is sent upstream; the patch is applied to a fresh checkout at build time. Dusklight is CC0,
 so building and sharing our own build is fine.
 
 ## Building the APK
+
+The APK ships the VR mod inside it (bundled like Dusklight's own mods), so there is nothing to
+install separately.
 
 Run the **Android VR APK** workflow from the Actions tab (input: the Dusklight tag, default
 `v2.0.1`). It mirrors Dusklight's own Android CI, applies the patch, builds the APK, signs it with a
@@ -48,12 +54,23 @@ With the patch in place the mod needs no engine internals:
 
 ## Still to do
 
-- `interop_vulkan.cpp` (the above)
-- OpenXR loader init on Android (Java VM + activity, through JNI rather than SDL, which the release
-  build doesn't export)
-- Controllers: OpenXR input mapped onto a virtual gamepad
+- Controllers: OpenXR input mapped onto a virtual gamepad (Quest/Pico controllers are not gamepads)
 - Session lifecycle: focus loss, pause/resume, headset removal
+- First run on device: nothing here has run on a headset yet — only builds
 - Performance: rendering twice plus the HUD capture copies is expensive on mobile GPUs. Cinema mode
   (one flat image on a big screen) is the first target; stereo needs measurement.
+- `copy_to_swapchains` waits on a fence before handing the targets back to Dawn; replacing that with
+  an exported sync-fd semaphore removes a per-frame CPU stall.
 - Not available on Android: the headset render-size override and the Dusklight UI panel, which both
-  use Aurora internals.
+  use Aurora internals the release build doesn't export.
+
+## Building the mod for Android
+
+CI builds `android-aarch64` alongside Windows, and the combined `.dusk` carries both. Locally:
+
+```
+cmake -B build-android -G Ninja \
+  -DCMAKE_TOOLCHAIN_FILE=$ANDROID_HOME/ndk/29.0.14206865/build/cmake/android.toolchain.cmake \
+  -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-28
+cmake --build build-android
+```

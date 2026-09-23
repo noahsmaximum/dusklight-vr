@@ -75,6 +75,20 @@ jobs:
         working-directory: dusklight
         run: cmake --build --preset x-android-ci-arm64 --target dusklight_mods
 
+      - name: Build the VR mod and bundle it into the APK
+        run: |
+          set -eux
+          stub=$(find dusklight/build -name "stub-android-*.so" | head -1)
+          cmake -S mod -B mod-build -G Ninja \
+            -DCMAKE_TOOLCHAIN_FILE="$ANDROID_HOME/ndk/${ANDROID_NDK_VERSION}/build/cmake/android.toolchain.cmake" \
+            -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-28 \
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DDUSKLIGHT_DIR="$PWD/dusklight" -DDUSK_GAME_EXE="$PWD/$stub"
+          cmake --build mod-build
+          # Bundled mods ship from this directory (see platforms/android/app/build.gradle).
+          mkdir -p dusklight/build/android-arm64/bundled_mods
+          cp mod-build/mods/*.dusk dusklight/build/android-arm64/bundled_mods/
+
       - name: Build APK
         working-directory: dusklight/platforms/android
         run: ./gradlew :app:assembleRelease --rerun-tasks
