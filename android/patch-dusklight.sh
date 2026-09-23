@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Turns a Dusklight checkout into the "VR edition" the mod needs on Android.
 #
-# Two changes, both additive:
+# Additive changes (see the numbered sections below):
 #   1. AndroidManifest.xml declares the app as an immersive OpenXR app, so Quest/Pico launch it in
 #      VR instead of as a flat panel, and so the OpenXR loader can find the runtime broker.
 #   2. Aurora requests Dawn's shared-texture/shared-fence features when the GPU offers them. That is
@@ -143,6 +143,74 @@ else
     sed -i 's|            --extra-sym "Java_\*"|            --extra-sym "Java_*"\n            # Dusklight VR: the mod hooks Aurora internals by name.\n            --extra-sym "_ZN6aurora*"\n            --extra-sym "_ZNK6aurora*"|' "$exports"
     grep -q "_ZN6aurora" "$exports" || { echo "exports: anchor not found" >&2; exit 1; }
     echo "exports: patched"
+fi
+
+# --- 5. Boot a disc image without the prelaunch screen --------------------------------------------
+# An immersive app never shows its 2D surface, and the prelaunch screen (disc picker) draws there, so
+# a first launch from the headset only shows the runtime's loading dots. When launched without
+# arguments, look for a disc image and pass it as --dvd: Dusklight then validates it, saves it as the
+# configured disc and boots straight into the game (where the VR mod takes over). Looks in the app's
+# own external files folder first (no permission needed), then Download (needs all-files access).
+
+activity="$root/platforms/android/app/src/main/java/com/twilitrealm/dusk/DuskActivity.java"
+if grep -q "findDiscImage" "$activity"; then
+    echo "disc autoboot: already patched"
+else
+    python3 - "$activity" <<'PY'
+import sys
+
+path = sys.argv[1]
+text = open(path, encoding="utf-8").read()
+
+old_return = "        return rawArgs == null ? arguments : splitArguments(rawArgs.trim());"
+assert old_return in text, "getArguments return not found"
+text = text.replace(
+    old_return,
+    "        if (rawArgs != null) {\n"
+    "            return splitArguments(rawArgs.trim());\n"
+    "        }\n"
+    "        // Dusklight VR: the prelaunch screen can't be seen in the headset; boot a disc image found\n"
+    "        // in the usual places instead (Dusklight saves it as the configured disc).\n"
+    "        String disc = findDiscImage();\n"
+    "        return disc == null ? arguments : new String[] {\"--dvd\", disc};",
+    1,
+)
+
+anchor = "    @Override\n    protected String[] getArguments() {"
+assert anchor in text, "getArguments not found"
+text = text.replace(
+    anchor,
+    "    private String findDiscImage() {\n"
+    "        java.util.List<File> dirs = new java.util.ArrayList<>();\n"
+    "        File own = getExternalFilesDir(null); // Android/data/<package>/files: no permission needed\n"
+    "        if (own != null) {\n"
+    "            dirs.add(own);\n"
+    "        }\n"
+    "        dirs.add(new File(android.os.Environment.getExternalStorageDirectory(), \"Download\"));\n"
+    "        for (File dir : dirs) {\n"
+    "            File[] files = dir.listFiles();\n"
+    "            if (files == null) {\n"
+    "                continue;\n"
+    "            }\n"
+    "            java.util.Arrays.sort(files);\n"
+    "            for (File file : files) {\n"
+    "                String name = file.getName().toLowerCase(java.util.Locale.ROOT);\n"
+    "                if (file.isFile() && (name.endsWith(\".iso\") || name.endsWith(\".gcm\") ||\n"
+    "                        name.endsWith(\".ciso\") || name.endsWith(\".gcz\") || name.endsWith(\".rvz\"))) {\n"
+    "                    Log.i(TAG, \"Dusklight VR: booting disc image \" + file);\n"
+    "                    return file.getAbsolutePath();\n"
+    "                }\n"
+    "            }\n"
+    "        }\n"
+    "        Log.w(TAG, \"Dusklight VR: no disc image in \" + dirs);\n"
+    "        return null;\n"
+    "    }\n"
+    "\n" + anchor,
+    1,
+)
+open(path, "w", encoding="utf-8").write(text)
+PY
+    echo "disc autoboot: patched"
 fi
 
 echo "Dusklight VR edition patch applied."
