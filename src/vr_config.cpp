@@ -12,6 +12,15 @@
 namespace vr {
 namespace {
 Config g_config;
+
+// Standalone headsets render the game twice on a mobile GPU: 60% holds 36 fps in stereo on a Quest 3.
+#ifdef __ANDROID__
+constexpr int64_t kDefaultRenderScale = 60;
+constexpr int64_t kPerformanceRenderScale = 60;
+#else
+constexpr int64_t kDefaultRenderScale = 100;
+constexpr int64_t kPerformanceRenderScale = 75;
+#endif
 } // namespace
 
 ConfigVars g_vars;
@@ -84,7 +93,7 @@ bool register_config() {
     ok &= reg_int(g_vars.hookLevel, "hookLevel", 4);
     ok &= reg_bool(g_vars.mirrorHud, "mirrorHud", true);
     ok &= reg_bool(g_vars.simulateHmd, "simulateHmd", false);
-    ok &= reg_int(g_vars.renderScalePercent, "renderScalePercent", 100);
+    ok &= reg_int(g_vars.renderScalePercent, "renderScalePercent", kDefaultRenderScale);
     refresh_config();
     return ok;
 }
@@ -163,7 +172,7 @@ void refresh_config() {
     c.hookLevel = static_cast<int>(std::clamp<int64_t>(get_int(g_vars.hookLevel, 4), 0, 4));
     c.mirrorHud = get_bool(g_vars.mirrorHud, true);
     c.simulateHmd = get_bool(g_vars.simulateHmd, false);
-    c.renderScale = static_cast<float>(std::clamp<int64_t>(get_int(g_vars.renderScalePercent, 100), 50, 200)) / 100.0f;
+    c.renderScale = static_cast<float>(std::clamp<int64_t>(get_int(g_vars.renderScalePercent, kDefaultRenderScale), 50, 200)) / 100.0f;
     g_config = c;
 }
 
@@ -193,7 +202,7 @@ const PresetDef kPresets[] = {
             {&ConfigVars::hudFollow, static_cast<int64_t>(HudFollow::Smooth)}},
         {{&ConfigVars::levelHorizon, true}, {&ConfigVars::disableDof, true}}},
     {"Stereo: performance", Mode::Stereo,
-        {{&ConfigVars::unitsPerMeter, 100}, {&ConfigVars::renderScalePercent, 75}},
+        {{&ConfigVars::unitsPerMeter, 100}, {&ConfigVars::renderScalePercent, kPerformanceRenderScale}},
         {{&ConfigVars::levelHorizon, true}, {&ConfigVars::disableDof, true}}},
     {"Cinema: living room", Mode::Cinema, {{&ConfigVars::screenDistanceCm, 300}, {&ConfigVars::screenWidthCm, 400}},
         {}},

@@ -4,9 +4,9 @@ if (NOT DEFINED CMAKE_BUILD_TYPE AND NOT DEFINED ENV{CMAKE_BUILD_TYPE})
     set(CMAKE_BUILD_TYPE "RelWithDebInfo" CACHE STRING "Build type")
 endif ()
 
-project(dusklight_vr VERSION 0.2.0 LANGUAGES C CXX)
+project(dusklight_vr VERSION 0.3.0 LANGUAGES C CXX)
 # Full version shown in the mod manager (project() only accepts numeric versions).
-set(MOD_VERSION "0.2.0")
+set(MOD_VERSION "0.3.0")
 
 if (NOT WIN32 AND NOT ANDROID)
     message(FATAL_ERROR "Dusklight VR supports Windows (D3D12) and Android (Vulkan)")
