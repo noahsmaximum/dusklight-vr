@@ -64,7 +64,5 @@ side by side on the desktop.
 
 ## Known limitations
 
-- Dusklight's own overlay UI (settings, mod manager) only appears on the desktop window.
 - Screen-space post effects are computed per eye; depth of field is disabled by default for comfort,
   motion blur is always off in stereo (it would blend in the other eye's frame).
-- Pause-menu 3D item models render flat on the menu panel (they are part of the 2D layer).
