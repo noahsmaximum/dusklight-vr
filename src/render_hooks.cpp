@@ -57,10 +57,12 @@ DEFINE_HOOK_SYMBOL("aurora::window::get_window_size", AuroraWindowSize(), GetWin
 #define VR_SYM_CLIP_SPHERE "?clip@J3DUClipper@@QEBAHPEAY03$$CBMUVec@@M@Z"
 #define VR_SYM_CLIP_BOX "?clip@J3DUClipper@@QEBAHPEAY03$$CBMPEAUVec@@1@Z"
 #define VR_SYM_CALC_TEX_MTX "?calcTexMtx@J3DTexMtx@@QEAAXQEAY03$$CBM@Z"
+#define VR_SYM_CALC_POST_TEX_MTX "?calcPostTexMtx@J3DTexMtx@@QEAAXQEAY03$$CBM@Z"
 #else
 #define VR_SYM_CLIP_SPHERE "_ZNK11J3DUClipper4clipEPA4_Kf3Vecf"
 #define VR_SYM_CLIP_BOX "_ZNK11J3DUClipper4clipEPA4_KfP3VecS4_"
 #define VR_SYM_CALC_TEX_MTX "_ZN9J3DTexMtx10calcTexMtxEPA4_Kf"
+#define VR_SYM_CALC_POST_TEX_MTX "_ZN9J3DTexMtx14calcPostTexMtxEPA4_Kf"
 #endif
 // Tabletop: the two J3DUClipper::clip overloads (sphere, box), the sky lists, fog.
 DEFINE_HOOK_SYMBOL(VR_SYM_CLIP_SPHERE, int(const void*, const f32 (*)[4], Vec, f32),
@@ -88,6 +90,9 @@ DEFINE_HOOK_SYMBOL("_ZN4dusk6interp26add_interpolation_callbackEPFvPvES1_NSt6__n
 #endif
 // View-projection texture matrices (J3D modes 3/9): effect matrix x view x model.
 DEFINE_HOOK_SYMBOL(VR_SYM_CALC_TEX_MTX, void(J3DTexMtx*, const f32 (*)[4]), CalcTexMtx);
+// The same for models drawn with post-transform texture matrices (model flag 0x20), where modes
+// 3/9 are effect x SRT alone, applied to view-space positions.
+DEFINE_HOOK_SYMBOL(VR_SYM_CALC_POST_TEX_MTX, void(J3DTexMtx*, const f32 (*)[4]), CalcPostTexMtx);
 
 // Dusklight's own UI (RmlUi) renders into aurora::rmlui::s_renderTarget during aurora_end_frame.
 // record_frame returns {bind group (null when nothing was drawn), overlay}; mirrored layouts below.
@@ -1206,6 +1211,16 @@ void calc_tex_mtx_post(ModContext*, void* args, void*, void*) {
     }
 }
 
+HookAction calc_post_tex_mtx_pre(ModContext* ctx, void* args, void* retval, void* user) {
+    const HookAction action = calc_tex_mtx_pre(ctx, args, retval, user);
+    static bool logged = false;
+    if (!logged && g_effectPatched != nullptr) {
+        logged = true;
+        mods::log::info("Corrected a post-transform view-projection texture matrix for the eye frustum");
+    }
+    return action;
+}
+
 HookAction end_frame_pre(ModContext*, void*, void*, void*) {
     if (!f.active) {
         return HOOK_CONTINUE;
@@ -1445,6 +1460,10 @@ bool install() {
         check<BgMaterialProc>(mods::hook::add_pre<BgMaterialProc>(bg_material_pre), "dKy_bg_MAxx_proc", false);
         check<CalcTexMtx>(mods::hook::add_pre<CalcTexMtx>(calc_tex_mtx_pre), "J3DTexMtx::calcTexMtx", false);
         check<CalcTexMtx>(mods::hook::add_post<CalcTexMtx>(calc_tex_mtx_post), "J3DTexMtx::calcTexMtx", false);
+        check<CalcPostTexMtx>(
+            mods::hook::add_pre<CalcPostTexMtx>(calc_post_tex_mtx_pre), "J3DTexMtx::calcPostTexMtx", false);
+        check<CalcPostTexMtx>(
+            mods::hook::add_post<CalcPostTexMtx>(calc_tex_mtx_post), "J3DTexMtx::calcPostTexMtx", false);
         // Without the widezoom guard the camera's callback would rewrite the eye view, so only use
         // the per-eye material refresh when both are available.
         if (mods::hook::add_pre<WidezoomCorrection>(widezoom_pre) == MOD_OK) {
