@@ -165,6 +165,7 @@ bool begin_access_texture(TargetNative& native, WGPUTexture texture, WGPUSharedF
     if (copyDone != nullptr) {
         begin.fenceCount = 1;
         begin.fences = &copyDone;
+        begin.signaledValueCount = 1;
         begin.signaledValues = &signaled;
     } else {
         begin.fenceCount = 0;

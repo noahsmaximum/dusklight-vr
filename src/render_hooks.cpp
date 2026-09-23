@@ -1479,19 +1479,6 @@ bool install() {
         }
     }
 
-    // PROBE
-    for (const char* n : {"src/dusk/interp/frame_interpolation.cpp#callbacks_run", "src/d/d_camera.cpp#widezoom_correction",
-             "widezoom_correction", "dusk::interp::add_interpolation_callback", "dusk::interp::begin_sim_tick",
-             "dusk::interp::begin_presentation", "dusk::interp::is_enabled", "dusk::interp::is_presentation_active",
-             "dusk::game_clock::is_sim_frame", "dusk::game_clock::g_frameTiming",
-             "_ZN4dusk6interp26add_interpolation_callbackEPFvPvES1_",
-             "_ZN9J3DTexMtx10calcTexMtxEPA4_Kf", "_ZNK11J3DUClipper4clipEPA4_Kf3Vecf",
-             "aurora::webgpu::refresh_surface", "dusk::config::load_arg_override"}) {
-        void* a = nullptr;
-        const ModResult r = svc_hook->resolve(mod_ctx, n, &a, nullptr);
-        mods::log::info("PROBE {} -> {} {}", n, static_cast<int>(r), a);
-    }
-
     void* refreshFn = nullptr;
     if (svc_hook->resolve(mod_ctx, "aurora::webgpu::refresh_surface", &refreshFn, nullptr) == MOD_OK) {
         g_refreshSurface = reinterpret_cast<RefreshSurfaceFn>(refreshFn);
