@@ -99,17 +99,32 @@ jobs:
         run: ./gradlew :app:assembleRelease --rerun-tasks
 
       - name: Sign the APK for sideloading
+        env:
+          # A fixed key, so updates install over the previous build. Forks without these secrets get
+          # a throwaway key (installs then need an uninstall first).
+          SIDELOAD_KEYSTORE: ${{ secrets.ANDROID_SIDELOAD_KEYSTORE }}
+          SIDELOAD_PASSWORD: ${{ secrets.ANDROID_SIDELOAD_PASSWORD }}
         run: |
-          set -eux
+          set -eu
           unsigned=$(find dusklight/platforms/android/app/build/outputs/apk/release -name "*-unsigned.apk" | head -1)
-          keytool -genkeypair -keystore sideload.jks -storepass sideload -keypass sideload \
-            -alias sideload -keyalg RSA -keysize 2048 -validity 10000 \
-            -dname "CN=Dusklight VR sideload, O=dusklight-vr, C=US"
+          if [ -n "$SIDELOAD_KEYSTORE" ] && [ -n "$SIDELOAD_PASSWORD" ]; then
+            echo "$SIDELOAD_KEYSTORE" | base64 -d > sideload.jks
+            pass="$SIDELOAD_PASSWORD"
+          else
+            echo "::warning::No sideload signing secrets; signing with a throwaway key"
+            pass=sideload
+            keytool -genkeypair -keystore sideload.jks -storepass "$pass" -keypass "$pass" \
+              -alias sideload -keyalg RSA -keysize 2048 -validity 10000 \
+              -dname "CN=Dusklight VR sideload, O=dusklight-vr, C=US"
+          fi
+          export SIDELOAD_PASSWORD_USED="$pass"
           tools=$(ls -d "$ANDROID_HOME"/build-tools/* | tail -1)
           mkdir -p out
           "$tools/zipalign" -p -f 4 "$unsigned" out/dusklight-vr-edition-arm64.apk
-          "$tools/apksigner" sign --ks sideload.jks --ks-pass pass:sideload --key-pass pass:sideload \
+          "$tools/apksigner" sign --ks sideload.jks --ks-key-alias sideload \
+            --ks-pass env:SIDELOAD_PASSWORD_USED --key-pass env:SIDELOAD_PASSWORD_USED \
             out/dusklight-vr-edition-arm64.apk
+          rm -f sideload.jks
           "$tools/apksigner" verify --print-certs out/dusklight-vr-edition-arm64.apk
 
       - name: Upload APK
