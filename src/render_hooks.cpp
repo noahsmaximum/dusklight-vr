@@ -112,6 +112,16 @@ struct Frame {
     f32 eyeFovy = 0.0f, eyeAspect = 0.0f;
 };
 Frame f;
+// Temporary first-time markers for the Android bring-up.
+#define VR_MARK(name)                                                                              \
+    do {                                                                                           \
+        static bool _seen = false;                                                                 \
+        if (!_seen) {                                                                              \
+            _seen = true;                                                                          \
+            mods::log::info("mark: {}", name);                                                     \
+        }                                                                                          \
+    } while (0)
+
 
 // Handed to the render worker through a compute payload (the payload itself carries only the slot).
 struct Packet {
@@ -533,12 +543,14 @@ xr::QuadLayer place_quad(bool menuOpen, bool screen) {
 // --- Worker-side callbacks --------------------------------------------------------------------------
 
 void begin_compute(ModContext*, const GfxComputeContext*, const void* payload, size_t size, void*) {
+    VR_MARK("begin_compute");
     if (size == sizeof(uint64_t)) {
         xr::begin_frame(*static_cast<const uint64_t*>(payload));
     }
 }
 
 void finish_compute(ModContext*, const GfxComputeContext* ctx, const void* payload, size_t size, void*) {
+    VR_MARK("finish_compute");
     if (size != sizeof(PacketRef)) {
         return;
     }
@@ -596,6 +608,7 @@ void finish_compute(ModContext*, const GfxComputeContext* ctx, const void* paylo
 // Runs on the render worker right after the frame's command buffer was submitted: copy the eye/quad
 // targets into the XR swapchains and end the XR frame.
 void frame_submitted() {
+    VR_MARK("frame_submitted");
     static bool logged = false;
     if (!logged) {
         logged = true;
@@ -677,6 +690,7 @@ void window_size_post(ModContext*, void*, void* retval, void*) {
 }
 
 HookAction begin_frame_pre(ModContext*, void*, void*, void*) {
+    VR_MARK("begin_frame_pre");
     const int64_t start = now_ticks();
     if (g_timing.lastFrameStart != 0) {
         smooth(g_timing.frameMs, ticks_to_ms(start - g_timing.lastFrameStart));
@@ -795,6 +809,13 @@ void end_hud_capture() {
 }
 
 void painter_replace(ModContext*, void*, void* retval, void*) {
+    VR_MARK("painter");
+    static int depth = 0;
+    ++depth;
+    if (depth <= 4) {
+        mods::log::info("painter depth {}", depth);
+        std::fflush(stdout);
+    }
     // Recorded by this frame's actor draws; the next frame's draws record them again (and models
     // can be deleted by the simulation in between).
     struct ClearBgModels {
@@ -854,6 +875,7 @@ void painter_replace(ModContext*, void*, void* retval, void*) {
         }
     }
 
+    VR_MARK("stereo loop");
     const int64_t paintStart = now_ticks();
     for (int eye = 0; eye < 2; ++eye) {
         f.eye = eye;
@@ -874,6 +896,7 @@ void painter_replace(ModContext*, void*, void* retval, void*) {
         f.scene[eye] = resolve_color();
     }
     f.eye = -1;
+    --depth;
     smooth(g_timing.painterMs, ticks_to_ms(now_ticks() - paintStart));
     if (cam != nullptr) {
         restore_view(cam->view, backup);
@@ -1207,13 +1230,26 @@ bool check(ModResult r, const char* what, bool required = true) {
 
 bool install() {
     bool ok = true;
+    // Bring-up switch: with minimalHooks the game-side hooks are skipped entirely, to tell a broken
+    // detour apart from a bug in our own frame handling.
+    const bool gameHooks = !config().minimalHooks;
+    if (config().minimalHooks) {
+        mods::log::info("minimalHooks: no hooks installed at all");
+        return true;
+    }
     ok &= check<AuroraBeginFrame>(mods::hook::add_pre<AuroraBeginFrame>(begin_frame_pre), "aurora_begin_frame");
     ok &= check<AuroraBeginFrame>(mods::hook::add_post<AuroraBeginFrame>(begin_frame_post), "aurora_begin_frame");
     ok &= check<AuroraEndFrame>(mods::hook::add_pre<AuroraEndFrame>(end_frame_pre), "aurora_end_frame");
+    if (gameHooks) {
     ok &= check<Painter>(mods::hook::replace<Painter>(painter_replace), "mDoGph_Painter");
+    mods::log::info("painter target {} orig {}", Painter::resolved_target(), reinterpret_cast<void*>(Painter::g_orig));
     ok &= check<RunStage>(mods::hook::add_pre<RunStage>(run_stage_pre), "gfx_run_stage");
     ok &= check<RunStage>(mods::hook::add_post<RunStage>(run_stage_post), "gfx_run_stage");
     ok &= check<OriginalFrames>(mods::hook::add_pre<OriginalFrames>(original_frames_pre), "original_frames");
+    }
+    // TEMP(android bring-up): optional hooks off to isolate a crash inside the painter.
+    const bool optionalHooks = !config().minimalHooks;
+    if (optionalHooks) {
     check<ImguiPreDraw>(mods::hook::add_pre<ImguiPreDraw>(skip_on_second_eye), "ImGuiConsole::PreDraw", false);
     check<ImguiPostDraw>(mods::hook::add_pre<ImguiPostDraw>(skip_on_second_eye), "ImGuiConsole::PostDraw", false);
     check<MotionBlur>(mods::hook::add_pre<MotionBlur>(motion_blur_pre), "motionBlure", false);
@@ -1227,6 +1263,7 @@ bool install() {
     check<SetFog>(mods::hook::add_pre<SetFog>(fog_pre), "GXSetFog", false);
     check<LightPerspective>(
         mods::hook::add_post<LightPerspective>(light_perspective_post), "C_MTXLightPerspective", false);
+    }
     if (!ok) {
         return false;
     }

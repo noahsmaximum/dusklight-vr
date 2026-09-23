@@ -38,6 +38,8 @@ struct TargetNative {
     AHardwareBuffer* buffer = nullptr;
     WGPUSharedTextureMemory memory = nullptr;
     bool accessOpen = false; // Dawn currently owns the texture
+    bool everUsed = false;   // false until Dawn has rendered into it once
+    VkImageLayout layout = VK_IMAGE_LAYOUT_UNDEFINED; // what Dawn left the image in
     VkImage image = VK_NULL_HANDLE;
     VkDeviceMemory imageMemory = VK_NULL_HANDLE;
 };
@@ -132,8 +134,14 @@ bool begin_access_texture(TargetNative& native, WGPUTexture texture) {
     if (native.accessOpen || texture == nullptr) {
         return true;
     }
+    // Dawn needs to know the image layout it is taking over, and what to leave it in.
+    WGPUSharedTextureMemoryVkImageLayoutBeginState layout =
+        WGPU_SHARED_TEXTURE_MEMORY_VK_IMAGE_LAYOUT_BEGIN_STATE_INIT;
+    layout.oldLayout = native.everUsed ? VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL : VK_IMAGE_LAYOUT_UNDEFINED;
+    layout.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
     WGPUSharedTextureMemoryBeginAccessDescriptor begin = WGPU_SHARED_TEXTURE_MEMORY_BEGIN_ACCESS_DESCRIPTOR_INIT;
-    begin.initialized = true;
+    begin.nextInChain = &layout.chain;
+    begin.initialized = native.everUsed;
     begin.fenceCount = 0;
     if (wgpuSharedTextureMemoryBeginAccess(native.memory, texture, &begin) != WGPUStatus_Success) {
         mods::log::error("wgpuSharedTextureMemoryBeginAccess failed");
@@ -351,6 +359,7 @@ bool enumerate_swapchain_images(uint64_t swapchain, std::vector<SwapchainImage>&
 }
 
 bool create_target(uint32_t width, uint32_t height, WGPUTextureFormat format, const char* label, Target& out) {
+    mods::log::info("mark: create_target {} {}x{}", label, width, height);
     destroy_target(out);
     auto* native = new TargetNative();
 
@@ -486,6 +495,11 @@ void destroy_target(Target& target) {
 }
 
 bool copy_to_swapchains(const std::vector<CopyJob>& jobs) {
+    static bool _first = true;
+    if (_first) {
+        _first = false;
+        mods::log::info("mark: first copy_to_swapchains ({} jobs)", jobs.size());
+    }
     if (jobs.empty() || g.vkDevice == VK_NULL_HANDLE) {
         return false;
     }
@@ -497,12 +511,17 @@ bool copy_to_swapchains(const std::vector<CopyJob>& jobs) {
         if (!native->accessOpen) {
             continue;
         }
+        WGPUSharedTextureMemoryVkImageLayoutEndState endLayout =
+            WGPU_SHARED_TEXTURE_MEMORY_VK_IMAGE_LAYOUT_END_STATE_INIT;
         WGPUSharedTextureMemoryEndAccessState end = WGPU_SHARED_TEXTURE_MEMORY_END_ACCESS_STATE_INIT;
+        end.nextInChain = &endLayout.chain;
         if (wgpuSharedTextureMemoryEndAccess(native->memory, job.source->texture, &end) != WGPUStatus_Success) {
             mods::log::error("wgpuSharedTextureMemoryEndAccess failed");
             return false;
         }
         native->accessOpen = false;
+        native->everUsed = true;
+        native->layout = static_cast<VkImageLayout>(endLayout.newLayout);
         import_dawn_fences(end, waits);
         wgpuSharedTextureMemoryEndAccessStateFreeMembers(end);
     }
@@ -520,8 +539,8 @@ bool copy_to_swapchains(const std::vector<CopyJob>& jobs) {
     for (const auto& job : jobs) {
         auto* native = native_of(*job.source);
         auto destination = reinterpret_cast<VkImage>(job.destination);
-        barrier(cmd, native->image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, 0,
-            VK_ACCESS_TRANSFER_READ_BIT);
+        barrier(cmd, native->image, native->layout, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+            VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT);
         barrier(cmd, destination, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0,
             VK_ACCESS_TRANSFER_WRITE_BIT);
         VkImageCopy region{};

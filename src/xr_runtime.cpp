@@ -445,6 +445,7 @@ bool create_session() {
     }
     XrSessionCreateInfo ci{XR_TYPE_SESSION_CREATE_INFO};
     ci.next = graphicsBinding;
+    ci.systemId = g.system;
     if (!xr_ok(xrCreateSession(g.instance, &ci, &g.session), "xrCreateSession")) {
         return false;
     }

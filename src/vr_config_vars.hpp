@@ -31,6 +31,7 @@ struct ConfigVars {
     ConfigVarHandle tableOffsetXCm = 0;
     ConfigVarHandle tableYawDeg = 0;
     ConfigVarHandle showDuskUi = 0;
+    ConfigVarHandle minimalHooks = 0; // bring-up: skip optional game hooks
     ConfigVarHandle mirrorHud = 0;
     ConfigVarHandle simulateHmd = 0;
     ConfigVarHandle renderScalePercent = 0;

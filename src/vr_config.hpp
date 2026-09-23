@@ -49,6 +49,7 @@ struct Config {
     float tableYawDeg = 0.0f;           // diorama turned about the table centre (counter-clockwise +)
     uint32_t tableKeyColor = 0x000000;  // background when the runtime is opaque (0xRRGGBB)
     bool showDuskUi = true;             // Dusklight's own UI (settings, mod manager) on a panel in the headset
+    bool minimalHooks = false;          // bring-up switch: install only the hooks VR cannot work without
 
     bool mirrorHud = true;      // composite the HUD onto the desktop mirror
     bool simulateHmd = false;    // debug: run the stereo pipeline without a headset

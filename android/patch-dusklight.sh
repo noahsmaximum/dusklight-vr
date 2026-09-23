@@ -35,7 +35,10 @@ text = text.replace(
     '    <uses-feature android:glEsVersion="0x00020000" />',
     '    <uses-feature android:glEsVersion="0x00020000" />\n'
     '    <uses-feature android:name="android.hardware.vr.headtracking" android:required="true"\n'
-    '        android:version="1" />',
+    '        android:version="1" />\n'
+    # Quest blocks the launch with a "controllers required" dialog unless the app says it can run
+    # without them.
+    '    <uses-feature android:name="oculus.software.handtracking" android:required="false" />',
     1,
 )
 
