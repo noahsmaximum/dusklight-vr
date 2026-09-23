@@ -145,16 +145,17 @@ else
     echo "exports: patched"
 fi
 
-# --- 5. Boot a disc image without the prelaunch screen --------------------------------------------
-# An immersive app never shows its 2D surface, and the prelaunch screen (disc picker) draws there, so
-# a first launch from the headset only shows the runtime's loading dots. When launched without
-# arguments, look for a disc image and pass it as --dvd: Dusklight then validates it, saves it as the
-# configured disc and boots straight into the game (where the VR mod takes over). Looks in the app's
-# own external files folder first (no permission needed), then Download (needs all-files access).
+# --- 5. Choose the disc from the headset ---------------------------------------------------------
+# An immersive app never shows its 2D surface, and Dusklight's prelaunch screen (disc picker) draws
+# there, so a first launch from the headset only shows the runtime's loading dots (the VR mod loads
+# once a disc is set). When no disc is configured, open Android's document picker instead (the Quest
+# shows it as a panel) before the game starts, keep read access to the chosen file, and pass it as
+# --dvd: Dusklight validates it, saves it as the configured disc and boots into the game. Later
+# launches use the saved disc. Cancelling the picker closes the app.
 
 activity="$root/platforms/android/app/src/main/java/com/twilitrealm/dusk/DuskActivity.java"
-if grep -q "findDiscImage" "$activity"; then
-    echo "disc autoboot: already patched"
+if grep -q "VR_DISC_REQUEST_CODE" "$activity"; then
+    echo "disc chooser: already patched"
 else
     python3 - "$activity" <<'PY'
 import sys
@@ -169,10 +170,16 @@ text = text.replace(
     "        if (rawArgs != null) {\n"
     "            return splitArguments(rawArgs.trim());\n"
     "        }\n"
-    "        // Dusklight VR: the prelaunch screen can't be seen in the headset; boot a disc image found\n"
-    "        // in the usual places instead (Dusklight saves it as the configured disc).\n"
-    "        String disc = findDiscImage();\n"
-    "        return disc == null ? arguments : new String[] {\"--dvd\", disc};",
+    "        // Dusklight VR: the prelaunch screen can't be seen in the headset; pick the disc here.\n"
+    "        if (hasConfiguredDisc()) {\n"
+    "            return arguments;\n"
+    "        }\n"
+    "        String disc = chooseDiscImage();\n"
+    "        if (disc == null) {\n"
+    "            runOnUiThread(this::finishAndRemoveTask);\n"
+    "            return arguments;\n"
+    "        }\n"
+    "        return new String[] {\"--dvd\", disc};",
     1,
 )
 
@@ -180,37 +187,84 @@ anchor = "    @Override\n    protected String[] getArguments() {"
 assert anchor in text, "getArguments not found"
 text = text.replace(
     anchor,
-    "    private String findDiscImage() {\n"
-    "        java.util.List<File> dirs = new java.util.ArrayList<>();\n"
-    "        File own = getExternalFilesDir(null); // Android/data/<package>/files: no permission needed\n"
-    "        if (own != null) {\n"
-    "            dirs.add(own);\n"
-    "        }\n"
-    "        dirs.add(new File(android.os.Environment.getExternalStorageDirectory(), \"Download\"));\n"
-    "        for (File dir : dirs) {\n"
-    "            File[] files = dir.listFiles();\n"
-    "            if (files == null) {\n"
-    "                continue;\n"
-    "            }\n"
-    "            java.util.Arrays.sort(files);\n"
-    "            for (File file : files) {\n"
-    "                String name = file.getName().toLowerCase(java.util.Locale.ROOT);\n"
-    "                if (file.isFile() && (name.endsWith(\".iso\") || name.endsWith(\".gcm\") ||\n"
-    "                        name.endsWith(\".ciso\") || name.endsWith(\".gcz\") || name.endsWith(\".rvz\"))) {\n"
-    "                    Log.i(TAG, \"Dusklight VR: booting disc image \" + file);\n"
-    "                    return file.getAbsolutePath();\n"
-    "                }\n"
-    "            }\n"
-    "        }\n"
-    "        Log.w(TAG, \"Dusklight VR: no disc image in \" + dirs);\n"
-    "        return null;\n"
-    "    }\n"
-    "\n" + anchor,
+    """    private static final int VR_DISC_REQUEST_CODE = 0x5652;
+    private final java.util.concurrent.CountDownLatch vrDiscChosen = new java.util.concurrent.CountDownLatch(1);
+    private volatile String vrDiscUri;
+
+    // The disc Dusklight has saved (backend.isoPath in config.json), if it can still be read.
+    private boolean hasConfiguredDisc() {
+        File config = new File(getFilesDir(), "config.json");
+        if (!config.isFile()) {
+            return false;
+        }
+        try {
+            String json = new String(java.nio.file.Files.readAllBytes(config.toPath()),
+                java.nio.charset.StandardCharsets.UTF_8);
+            String disc = new org.json.JSONObject(json).optString("backend.isoPath", "");
+            if (disc.isEmpty()) {
+                return false;
+            }
+            if (disc.startsWith("content://")) {
+                try (android.os.ParcelFileDescriptor fd =
+                         getContentResolver().openFileDescriptor(android.net.Uri.parse(disc), "r")) {
+                    return fd != null;
+                }
+            }
+            return new File(disc).canRead();
+        } catch (Exception e) {
+            Log.w(TAG, "Dusklight VR: configured disc unusable", e);
+            return false;
+        }
+    }
+
+    // Called on SDL's main thread (before the game starts): shows the system document picker and
+    // waits for the choice. Returns a content:// URI, or null when cancelled.
+    private String chooseDiscImage() {
+        runOnUiThread(() -> {
+            Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+            intent.addCategory(Intent.CATEGORY_OPENABLE);
+            intent.setType("*/*");
+            intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
+            try {
+                startActivityForResult(intent, VR_DISC_REQUEST_CODE);
+            } catch (android.content.ActivityNotFoundException e) {
+                Log.w(TAG, "Dusklight VR: no document picker available", e);
+                vrDiscChosen.countDown();
+            }
+        });
+        try {
+            vrDiscChosen.await();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+        return vrDiscUri;
+    }
+
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        if (requestCode != VR_DISC_REQUEST_CODE) {
+            super.onActivityResult(requestCode, resultCode, data);
+            return;
+        }
+        if (resultCode == RESULT_OK && data != null && data.getData() != null) {
+            android.net.Uri uri = data.getData();
+            try {
+                getContentResolver().takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            } catch (SecurityException e) {
+                Log.w(TAG, "Dusklight VR: could not keep access to " + uri, e);
+            }
+            Log.i(TAG, "Dusklight VR: disc chosen: " + uri);
+            vrDiscUri = uri.toString();
+        }
+        vrDiscChosen.countDown();
+    }
+
+""" + anchor,
     1,
 )
 open(path, "w", encoding="utf-8").write(text)
 PY
-    echo "disc autoboot: patched"
+    echo "disc chooser: patched"
 fi
 
 echo "Dusklight VR edition patch applied."
