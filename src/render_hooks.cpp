@@ -342,6 +342,7 @@ struct Timing {
     int64_t lastFrameStart = 0;
 };
 Timing g_timing;
+int64_t g_perfEndFrameAt = 0; // TEMP(android perf)
 
 int64_t now_ticks() {
     return std::chrono::steady_clock::now().time_since_epoch().count();
@@ -828,12 +829,33 @@ void window_size_post(ModContext*, void*, void* retval, void*) {
         auto* size = static_cast<AuroraWindowSize*>(retval);
         size->fb_width = w;
         size->fb_height = h;
+#ifdef __ANDROID__
+        // On a standalone headset nobody sees the app's 2D surface while the session runs, yet every
+        // frame Aurora resamples, blits, draws ImGui and sizes RmlUi's target at the surface size
+        // (~4K on a Quest 3): a fixed ~15 ms. Configure the surface at the render size instead.
+        size->native_fb_width = w;
+        size->native_fb_height = h;
+#endif
     }
 }
 
 HookAction begin_frame_pre(ModContext*, void*, void*, void*) {
     VR_MARK("begin_frame_pre");
     const int64_t start = now_ticks();
+    // TEMP(android perf): where the frame goes. gameMs = begin_frame_pre -> end_frame_pre (sim +
+    // recording), tailMs = end_frame_pre -> next begin_frame_pre (Aurora end_frame + anything after).
+    {
+        static int64_t s_lastLog = 0;
+        static double s_gameMs = 0.0, s_tailMs = 0.0;
+        if (g_perfEndFrameAt != 0 && g_timing.lastFrameStart != 0) {
+            smooth(s_tailMs, ticks_to_ms(start - g_perfEndFrameAt));
+            smooth(s_gameMs, ticks_to_ms(g_perfEndFrameAt - g_timing.lastFrameStart));
+        }
+        if (ticks_to_ms(start - s_lastLog) > 5000.0) {
+            s_lastLog = start;
+            mods::log::info("PERF {} | game {:.1f} ms, tail {:.1f} ms", status(), s_gameMs, s_tailMs);
+        }
+    }
     if (g_timing.lastFrameStart != 0) {
         smooth(g_timing.frameMs, ticks_to_ms(start - g_timing.lastFrameStart));
     }
@@ -1223,6 +1245,7 @@ void calc_tex_mtx_post(ModContext*, void* args, void*, void*) {
 }
 
 HookAction end_frame_pre(ModContext*, void*, void*, void*) {
+    g_perfEndFrameAt = now_ticks(); // TEMP(android perf)
     if (!f.active) {
         return HOOK_CONTINUE;
     }
