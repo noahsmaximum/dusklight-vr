@@ -3,9 +3,7 @@
 param(
     [int]$Seconds = 60,
     [string]$Stage = "F_SP103",
-    # (No game.enableFrameInterpolation here: Dusklight 2.0.0 hits a FATAL parsing it with --stage;
-    # the mod applies it itself once a session runs.)
-    [string[]]$Cvars = @("mod.com_noahsmaximum_dusklight__vr.simulateHmd=true"),
+    [string[]]$Cvars = @("mod.com_noahsmaximum_dusklight__vr.simulateHmd=true", "game.enableFrameInterpolation=2"),
     [string]$Shot = "$PSScriptRoot\..\build\shot.png",
     [switch]$KeepRunning,
     [switch]$Headset
