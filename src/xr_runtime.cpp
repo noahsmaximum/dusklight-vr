@@ -613,7 +613,7 @@ bool initialize(WGPUDevice device, WGPUAdapter adapter, bool createInstance) {
     // Some runtimes still want the VM/context on the instance itself.
     XrInstanceCreateInfoAndroidKHR androidInfo{XR_TYPE_INSTANCE_CREATE_INFO_ANDROID_KHR};
     androidInfo.applicationVM = android::java_vm();
-    androidInfo.applicationActivity = android::application_context();
+    androidInfo.applicationActivity = android::activity();
     if (offered(XR_KHR_ANDROID_CREATE_INSTANCE_EXTENSION_NAME)) {
         enabled.push_back(XR_KHR_ANDROID_CREATE_INSTANCE_EXTENSION_NAME);
     }

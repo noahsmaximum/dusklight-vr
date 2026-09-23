@@ -7,5 +7,7 @@ namespace vr::android {
 bool initialize_loader();
 void* java_vm();
 void* application_context();
+// The running Activity (falls back to the Application when it cannot be found).
+void* activity();
 
 } // namespace vr::android

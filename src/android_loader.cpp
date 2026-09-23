@@ -13,12 +13,13 @@
 // On Android the OpenXR loader has to be initialised with the app's Java VM and a Context before
 // anything else, and the instance carries them too. Dusklight's release build exports no SDL
 // symbols, so both come from the Java runtime directly: JNI_GetCreatedJavaVMs for the VM, and
-// ActivityThread.currentApplication() for the Context.
+// ActivityThread.currentApplication() for the Context (and, through it, the Activity).
 namespace vr::android {
 namespace {
 
 JavaVM* g_vm = nullptr;
-jobject g_context = nullptr; // global ref
+jobject g_context = nullptr;  // global ref
+jobject g_activity = nullptr; // global ref
 bool g_ready = false;
 
 JavaVM* find_java_vm() {
@@ -64,6 +65,65 @@ jobject find_application_context(JNIEnv* env) {
     return application;
 }
 
+// The Activity itself. Meta's runtime follows its lifecycle to move the session to READY; with only
+// the Application it waits forever in IDLE. SDL keeps it behind SDLActivity.getContext(), and app
+// classes are only visible through the app's class loader (not FindClass on a native thread).
+jobject find_activity(JNIEnv* env, jobject application) {
+    // Logs and clears a pending Java exception; true when there was one.
+    auto failed = [env](const char* step) {
+        if (!env->ExceptionCheck()) {
+            return false;
+        }
+        env->ExceptionDescribe(); // to logcat
+        env->ExceptionClear();
+        mods::log::warn("Android: Activity lookup failed at {}", step);
+        return true;
+    };
+    jclass contextClass = env->GetObjectClass(application);
+    jmethodID getClassLoader = env->GetMethodID(contextClass, "getClassLoader", "()Ljava/lang/ClassLoader;");
+    if (failed("getClassLoader") || getClassLoader == nullptr) {
+        return nullptr;
+    }
+    jobject loader = env->CallObjectMethod(application, getClassLoader);
+    jclass loaderClass = env->FindClass("java/lang/ClassLoader");
+    jmethodID loadClass = env->GetMethodID(loaderClass, "loadClass", "(Ljava/lang/String;)Ljava/lang/Class;");
+    if (failed("ClassLoader.loadClass lookup") || loader == nullptr) {
+        return nullptr;
+    }
+    jstring name = env->NewStringUTF("org.libsdl.app.SDLActivity");
+    auto sdlActivity = static_cast<jclass>(env->CallObjectMethod(loader, loadClass, name));
+    if (failed("loadClass(SDLActivity)") || sdlActivity == nullptr) {
+        return nullptr;
+    }
+    // SDL has kept the Activity in different places across versions: try the singleton field first,
+    // then SDL.getContext().
+    jobject activity = nullptr;
+    jfieldID singleton = env->GetStaticFieldID(sdlActivity, "mSingleton", "Lorg/libsdl/app/SDLActivity;");
+    if (!failed("SDLActivity.mSingleton") && singleton != nullptr) {
+        activity = env->GetStaticObjectField(sdlActivity, singleton);
+    }
+    if (activity == nullptr) {
+        jstring sdlName = env->NewStringUTF("org.libsdl.app.SDL");
+        auto sdl = static_cast<jclass>(env->CallObjectMethod(loader, loadClass, sdlName));
+        if (!failed("loadClass(SDL)") && sdl != nullptr) {
+            jmethodID getContext = env->GetStaticMethodID(sdl, "getContext", "()Landroid/content/Context;");
+            if (!failed("SDL.getContext lookup") && getContext != nullptr) {
+                activity = env->CallStaticObjectMethod(sdl, getContext);
+            }
+        }
+    }
+    jclass activityClass = env->FindClass("android/app/Activity");
+    if (failed("FindClass(Activity)") || activity == nullptr) {
+        mods::log::warn("Android: SDL holds no Activity");
+        return nullptr;
+    }
+    if (!env->IsInstanceOf(activity, activityClass)) {
+        mods::log::warn("Android: SDL's context is not an Activity");
+        return nullptr;
+    }
+    return activity;
+}
+
 } // namespace
 
 bool initialize_loader() {
@@ -87,6 +147,11 @@ bool initialize_loader() {
         return false;
     }
     g_context = env->NewGlobalRef(context);
+    if (jobject activity = find_activity(env, context)) {
+        g_activity = env->NewGlobalRef(activity);
+    } else {
+        mods::log::warn("Android: could not reach the Activity; the headset may never start the session");
+    }
 
     PFN_xrInitializeLoaderKHR initializeLoader = nullptr;
     if (XR_FAILED(xrGetInstanceProcAddr(XR_NULL_HANDLE, "xrInitializeLoaderKHR",
@@ -110,5 +175,6 @@ bool initialize_loader() {
 
 void* java_vm() { return g_vm; }
 void* application_context() { return g_context; }
+void* activity() { return g_activity != nullptr ? g_activity : g_context; }
 
 } // namespace vr::android

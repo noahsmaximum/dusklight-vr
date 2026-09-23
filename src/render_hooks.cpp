@@ -31,6 +31,7 @@
 #include <cstring>
 #include <mutex>
 #include <string_view>
+#include <type_traits>
 #include <vector>
 
 // --- Hook targets ------------------------------------------------------------------------------------
@@ -72,7 +73,17 @@ DEFINE_HOOK_SYMBOL("?calcTexMtx@J3DTexMtx@@QEAAXQEAY03$$CBM@Z", void(J3DTexMtx*,
 struct RmlRecordedFrame {
     void* bindGroup;
     bool overlay;
+    // Aurora's RecordedFrame holds a wgpu::BindGroup, so it is non-trivial for the purposes of calls
+    // and comes back through the hidden return pointer. The mirror must be returned the same way: as
+    // a trivial 16-byte struct arm64 returns it in x0/x1, the trampoline never passes x8 on, and the
+    // real function writes its result through a stale pointer (the first-frame crash on Quest).
+    // Windows x64 returns both in memory, which is why it only broke on Android.
+    RmlRecordedFrame() = default;
+    RmlRecordedFrame(const RmlRecordedFrame&) = default;
+    RmlRecordedFrame& operator=(const RmlRecordedFrame&) = default;
+    ~RmlRecordedFrame() {}
 };
+static_assert(!std::is_trivially_destructible_v<RmlRecordedFrame>, "must be returned in memory like aurora's");
 struct RmlRenderTarget { // aurora::webgpu::TextureWithSampler
     WGPUTexture texture;
     WGPUTextureView view;
@@ -1162,6 +1173,9 @@ HookAction rml_begin_frame_pre(ModContext*, void* args, void*, void*) {
     // In the headset only the UI itself belongs on its panel. Menus with a backdrop blur make RmlUi
     // draw the whole scene underneath; render them as a transparent overlay instead (the blur then
     // has nothing behind it, the panels keep their tint).
+    // The target is aurora::rmlui::s_renderTarget, which has internal linkage (no symbol to resolve
+    // on Android); its address arrives here by reference.
+    g_rmlTarget = static_cast<const RmlRenderTarget*>(mods::arg<const void*>(args, 1));
     int& baseLayer = mods::arg_ref<int>(args, 3);
     if (baseLayer != 0 && config().showDuskUi && config().mode != Mode::Off &&
         (xr::session_running() || config().simulateHmd)) {
@@ -1228,104 +1242,105 @@ bool check(ModResult r, const char* what, bool required = true) {
 
 } // namespace
 
+// Bring-up switch (Android): installing every detour at once crashed the first frame on a Quest, so
+// hookLevel narrows the set to bisect the culprit on device.
+//   0 nothing   1 Aurora frame hooks   2 + frame delivery   3 + Dusklight UI   4 (default) everything
 bool install() {
     bool ok = true;
-    // Bring-up switch: with minimalHooks the game-side hooks are skipped entirely, to tell a broken
-    // detour apart from a bug in our own frame handling.
-    const bool gameHooks = !config().minimalHooks;
-    if (config().minimalHooks) {
-        mods::log::info("minimalHooks: no hooks installed at all");
+    const int level = config().hookLevel;
+    if (level < 4) {
+        mods::log::warn("hookLevel {}: installing a reduced hook set (bring-up switch)", level);
+    }
+    if (level < 1) {
         return true;
     }
     ok &= check<AuroraBeginFrame>(mods::hook::add_pre<AuroraBeginFrame>(begin_frame_pre), "aurora_begin_frame");
     ok &= check<AuroraBeginFrame>(mods::hook::add_post<AuroraBeginFrame>(begin_frame_post), "aurora_begin_frame");
     ok &= check<AuroraEndFrame>(mods::hook::add_pre<AuroraEndFrame>(end_frame_pre), "aurora_end_frame");
-    if (gameHooks) {
-    ok &= check<Painter>(mods::hook::replace<Painter>(painter_replace), "mDoGph_Painter");
-    mods::log::info("painter target {} orig {}", Painter::resolved_target(), reinterpret_cast<void*>(Painter::g_orig));
-    ok &= check<RunStage>(mods::hook::add_pre<RunStage>(run_stage_pre), "gfx_run_stage");
-    ok &= check<RunStage>(mods::hook::add_post<RunStage>(run_stage_post), "gfx_run_stage");
-    ok &= check<OriginalFrames>(mods::hook::add_pre<OriginalFrames>(original_frames_pre), "original_frames");
-    }
-    // TEMP(android bring-up): optional hooks off to isolate a crash inside the painter.
-    const bool optionalHooks = !config().minimalHooks;
-    if (optionalHooks) {
-    check<ImguiPreDraw>(mods::hook::add_pre<ImguiPreDraw>(skip_on_second_eye), "ImGuiConsole::PreDraw", false);
-    check<ImguiPostDraw>(mods::hook::add_pre<ImguiPostDraw>(skip_on_second_eye), "ImGuiConsole::PostDraw", false);
-    check<MotionBlur>(mods::hook::add_pre<MotionBlur>(motion_blur_pre), "motionBlure", false);
-    check<Trimming>(mods::hook::add_pre<Trimming>(trimming_pre), "trimming", false);
-    check<ClipperSetup>(mods::hook::add_pre<ClipperSetup>(clipper_setup_pre), "mDoLib_clipper::setup", false);
-    check<GetWindowSize>(mods::hook::add_post<GetWindowSize>(window_size_post), "get_window_size", false);
-    check<ClipSphere>(mods::hook::add_pre<ClipSphere>(clip_pre), "J3DUClipper::clip (sphere)", false);
-    check<ClipBox>(mods::hook::add_pre<ClipBox>(clip_pre), "J3DUClipper::clip (box)", false);
-    check<DrawOpaSky>(mods::hook::add_pre<DrawOpaSky>(sky_pre), "dComIfGd_drawOpaListSky", false);
-    check<DrawXluSky>(mods::hook::add_pre<DrawXluSky>(sky_pre), "dComIfGd_drawXluListSky", false);
-    check<SetFog>(mods::hook::add_pre<SetFog>(fog_pre), "GXSetFog", false);
-    check<LightPerspective>(
-        mods::hook::add_post<LightPerspective>(light_perspective_post), "C_MTXLightPerspective", false);
+    if (level >= 4) {
+        ok &= check<Painter>(mods::hook::replace<Painter>(painter_replace), "mDoGph_Painter");
+        ok &= check<RunStage>(mods::hook::add_pre<RunStage>(run_stage_pre), "gfx_run_stage");
+        ok &= check<RunStage>(mods::hook::add_post<RunStage>(run_stage_post), "gfx_run_stage");
+        ok &= check<OriginalFrames>(mods::hook::add_pre<OriginalFrames>(original_frames_pre), "original_frames");
+        check<ImguiPreDraw>(mods::hook::add_pre<ImguiPreDraw>(skip_on_second_eye), "ImGuiConsole::PreDraw", false);
+        check<ImguiPostDraw>(mods::hook::add_pre<ImguiPostDraw>(skip_on_second_eye), "ImGuiConsole::PostDraw", false);
+        check<MotionBlur>(mods::hook::add_pre<MotionBlur>(motion_blur_pre), "motionBlure", false);
+        check<Trimming>(mods::hook::add_pre<Trimming>(trimming_pre), "trimming", false);
+        check<ClipperSetup>(mods::hook::add_pre<ClipperSetup>(clipper_setup_pre), "mDoLib_clipper::setup", false);
+        check<GetWindowSize>(mods::hook::add_post<GetWindowSize>(window_size_post), "get_window_size", false);
+        check<ClipSphere>(mods::hook::add_pre<ClipSphere>(clip_pre), "J3DUClipper::clip (sphere)", false);
+        check<ClipBox>(mods::hook::add_pre<ClipBox>(clip_pre), "J3DUClipper::clip (box)", false);
+        check<DrawOpaSky>(mods::hook::add_pre<DrawOpaSky>(sky_pre), "dComIfGd_drawOpaListSky", false);
+        check<DrawXluSky>(mods::hook::add_pre<DrawXluSky>(sky_pre), "dComIfGd_drawXluListSky", false);
+        check<SetFog>(mods::hook::add_pre<SetFog>(fog_pre), "GXSetFog", false);
+        check<LightPerspective>(
+            mods::hook::add_post<LightPerspective>(light_perspective_post), "C_MTXLightPerspective", false);
     }
     if (!ok) {
         return false;
     }
 
-    GfxComputeTypeDesc begin = GFX_COMPUTE_TYPE_DESC_INIT;
-    begin.label = "Dusklight VR frame begin";
-    begin.callback = begin_compute;
-    GfxComputeTypeDesc finish = GFX_COMPUTE_TYPE_DESC_INIT;
-    finish.label = "Dusklight VR composite";
-    finish.callback = finish_compute;
-    if (svc_gfx->register_compute_type(mod_ctx, &begin, &g_beginCompute) != MOD_OK ||
-        svc_gfx->register_compute_type(mod_ctx, &finish, &g_finishCompute) != MOD_OK)
-    {
-        mods::log::error("failed to register VR compute callbacks");
-        return false;
-    }
-
-    // Frame delivery: Aurora's own post-submit step (works on every platform); the import-table hook
-    // on wgpuQueueSubmit is only a Windows fallback.
-    if (mods::hook::add_post<AfterSubmit>(after_submit_post) == MOD_OK) {
-        mods::log::info("Frame delivery: aurora::gfx::after_submit");
-    } else if (mods::hook::add_post<DepthPeekAfterSubmit>(after_submit_post) == MOD_OK) {
-        mods::log::info("Frame delivery: aurora::gfx::depth_peek::after_submit");
-    } else {
-#ifdef _WIN32
-        void* orig = nullptr;
-        if (!patch_import(GetModuleHandleW(nullptr), "webgpu_dawn.dll", "wgpuQueueSubmit",
-                reinterpret_cast<void*>(&hk_queue_submit), &orig))
+    if (level >= 2) {
+        GfxComputeTypeDesc begin = GFX_COMPUTE_TYPE_DESC_INIT;
+        begin.label = "Dusklight VR frame begin";
+        begin.callback = begin_compute;
+        GfxComputeTypeDesc finish = GFX_COMPUTE_TYPE_DESC_INIT;
+        finish.label = "Dusklight VR composite";
+        finish.callback = finish_compute;
+        if (svc_gfx->register_compute_type(mod_ctx, &begin, &g_beginCompute) != MOD_OK ||
+            svc_gfx->register_compute_type(mod_ctx, &finish, &g_finishCompute) != MOD_OK)
         {
-            mods::log::error("could not observe frame submission; VR frames cannot be delivered");
+            mods::log::error("failed to register VR compute callbacks");
             return false;
         }
-        g_origQueueSubmit = reinterpret_cast<QueueSubmitFn>(orig);
-        mods::log::info("Frame delivery: wgpuQueueSubmit import hook");
+
+        // Frame delivery: Aurora's own post-submit step (works on every platform); the import-table
+        // hook on wgpuQueueSubmit is only a Windows fallback.
+        if (mods::hook::add_post<AfterSubmit>(after_submit_post) == MOD_OK) {
+            mods::log::info("Frame delivery: aurora::gfx::after_submit");
+        } else if (mods::hook::add_post<DepthPeekAfterSubmit>(after_submit_post) == MOD_OK) {
+            mods::log::info("Frame delivery: aurora::gfx::depth_peek::after_submit");
+        } else {
+#ifdef _WIN32
+            void* orig = nullptr;
+            if (!patch_import(GetModuleHandleW(nullptr), "webgpu_dawn.dll", "wgpuQueueSubmit",
+                    reinterpret_cast<void*>(&hk_queue_submit), &orig))
+            {
+                mods::log::error("could not observe frame submission; VR frames cannot be delivered");
+                return false;
+            }
+            g_origQueueSubmit = reinterpret_cast<QueueSubmitFn>(orig);
+            mods::log::info("Frame delivery: wgpuQueueSubmit import hook");
 #else
-        mods::log::error("could not observe frame submission; VR frames cannot be delivered");
-        return false;
+            mods::log::error("could not observe frame submission; VR frames cannot be delivered");
+            return false;
 #endif
+        }
     }
 
-    check<BgMaterialProc>(mods::hook::add_pre<BgMaterialProc>(bg_material_pre), "dKy_bg_MAxx_proc", false);
-    void* rmlTarget = nullptr;
-    if (mods::hook::add_post<RmlRecordFrame>(rml_record_post) == MOD_OK &&
-        svc_hook->resolve(mod_ctx, "aurora::rmlui::s_renderTarget", &rmlTarget, nullptr) == MOD_OK)
-    {
-        g_rmlTarget = static_cast<const RmlRenderTarget*>(rmlTarget);
-        check<RmlBeginFrame>(mods::hook::add_pre<RmlBeginFrame>(rml_begin_frame_pre), "rmlui BeginFrame", false);
-    } else {
-        mods::log::warn("Dusklight UI unavailable in the headset");
+    if (level >= 3) {
+        if (mods::hook::add_pre<RmlBeginFrame>(rml_begin_frame_pre) != MOD_OK ||
+            mods::hook::add_post<RmlRecordFrame>(rml_record_post) != MOD_OK)
+        {
+            mods::log::warn("Dusklight UI unavailable in the headset");
+        }
     }
-    check<CalcTexMtx>(mods::hook::add_pre<CalcTexMtx>(calc_tex_mtx_pre), "J3DTexMtx::calcTexMtx", false);
-    check<CalcTexMtx>(mods::hook::add_post<CalcTexMtx>(calc_tex_mtx_post), "J3DTexMtx::calcTexMtx", false);
-    // Without the widezoom guard the camera's callback would rewrite the eye view, so only use the
-    // per-eye material refresh when both are available.
-    void* callbacksFn = nullptr;
-    if (mods::hook::add_pre<WidezoomCorrection>(widezoom_pre) == MOD_OK &&
-        svc_hook->resolve(mod_ctx, "src/dusk/interp/frame_interpolation.cpp#callbacks_run", &callbacksFn, nullptr) ==
-            MOD_OK)
-    {
-        g_callbacksRun = reinterpret_cast<CallbacksRunFn>(callbacksFn);
-    } else {
-        mods::log::warn("per-eye material refresh unavailable; water may look wrong in stereo");
+
+    if (level >= 4) {
+        check<BgMaterialProc>(mods::hook::add_pre<BgMaterialProc>(bg_material_pre), "dKy_bg_MAxx_proc", false);
+        check<CalcTexMtx>(mods::hook::add_pre<CalcTexMtx>(calc_tex_mtx_pre), "J3DTexMtx::calcTexMtx", false);
+        check<CalcTexMtx>(mods::hook::add_post<CalcTexMtx>(calc_tex_mtx_post), "J3DTexMtx::calcTexMtx", false);
+        // Without the widezoom guard the camera's callback would rewrite the eye view, so only use
+        // the per-eye material refresh when both are available.
+        void* callbacksFn = nullptr;
+        if (mods::hook::add_pre<WidezoomCorrection>(widezoom_pre) == MOD_OK &&
+            svc_hook->resolve(mod_ctx, "src/dusk/interp/frame_interpolation.cpp#callbacks_run", &callbacksFn,
+                nullptr) == MOD_OK)
+        {
+            g_callbacksRun = reinterpret_cast<CallbacksRunFn>(callbacksFn);
+        } else {
+            mods::log::warn("per-eye material refresh unavailable; water may look wrong in stereo");
+        }
     }
 
     void* refreshFn = nullptr;

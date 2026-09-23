@@ -17,6 +17,8 @@
 
 #include <array>
 #include <iterator>
+
+#include <unistd.h>
 #include <cstring>
 
 // Android frame handoff, entirely through public APIs (the Android build of Dusklight exports no
@@ -103,8 +105,17 @@ bool import_dawn_fences(WGPUSharedTextureMemoryEndAccessState& state, std::vecto
         import.semaphore = semaphore;
         import.flags = VK_SEMAPHORE_IMPORT_TEMPORARY_BIT;
         import.handleType = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_SYNC_FD_BIT;
-        import.fd = syncFd.handle; // ownership moves to Vulkan
+        // A successful import takes ownership of the fd, but the one Dawn reports still belongs to its
+        // fence (freed with the end-access state). Hand Vulkan a duplicate, or both close it: Android's
+        // fdsan aborts on the second close, and the submit before that fails on the stale fd.
+        import.fd = dup(syncFd.handle);
+        if (import.fd < 0) {
+            mods::log::error("dup of a Dawn sync fd failed");
+            vkDestroySemaphore(g.vkDevice, semaphore, nullptr);
+            return false;
+        }
         if (!vk_ok(g.importSemaphoreFd(g.vkDevice, &import), "vkImportSemaphoreFdKHR")) {
+            close(import.fd); // a failed import leaves the fd with us
             vkDestroySemaphore(g.vkDevice, semaphore, nullptr);
             return false;
         }

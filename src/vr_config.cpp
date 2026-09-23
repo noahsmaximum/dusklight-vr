@@ -81,7 +81,7 @@ bool register_config() {
     ok &= reg_int(g_vars.tableOffsetXCm, "tableOffsetXCm", 0);
     ok &= reg_int(g_vars.tableYawDeg, "tableYawDeg", 0);
     ok &= reg_bool(g_vars.showDuskUi, "showDuskUi", true);
-    ok &= reg_bool(g_vars.minimalHooks, "minimalHooks", false);
+    ok &= reg_int(g_vars.hookLevel, "hookLevel", 4);
     ok &= reg_bool(g_vars.mirrorHud, "mirrorHud", true);
     ok &= reg_bool(g_vars.simulateHmd, "simulateHmd", false);
     ok &= reg_int(g_vars.renderScalePercent, "renderScalePercent", 100);
@@ -160,7 +160,7 @@ void refresh_config() {
     c.tableOffsetX = static_cast<float>(std::clamp<int64_t>(get_int(g_vars.tableOffsetXCm, 0), -300, 300)) / 100.0f;
     c.tableYawDeg = static_cast<float>(std::clamp<int64_t>(get_int(g_vars.tableYawDeg, 0), -180, 180));
     c.showDuskUi = get_bool(g_vars.showDuskUi, true);
-    c.minimalHooks = get_bool(g_vars.minimalHooks, false);
+    c.hookLevel = static_cast<int>(std::clamp<int64_t>(get_int(g_vars.hookLevel, 4), 0, 4));
     c.mirrorHud = get_bool(g_vars.mirrorHud, true);
     c.simulateHmd = get_bool(g_vars.simulateHmd, false);
     c.renderScale = static_cast<float>(std::clamp<int64_t>(get_int(g_vars.renderScalePercent, 100), 50, 200)) / 100.0f;
