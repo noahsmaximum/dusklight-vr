@@ -69,7 +69,7 @@ cmake --build build
   source with aurora submodule, mod-template.
 - `testgame/` (gitignored): official v2.0.0 Windows build in **portable mode**
   (`data_location.json`), so the user's `%APPDATA%` config is never touched.
-- `tools/run_test.ps1`: launches testgame with the built mod at Ordon (`--stage F_SP103`), default
+- `tools/run_test.ps1`: launches testgame with the built mod in Ordon Village by the river (`--stage F_SP103,0,5,-1`; point 0 is the ranch path and Link walks straight back out), default
   cvar `simulateHmd=true` (side-by-side stereo without a headset), captures the window with
   PrintWindow. **If Virtual Desktop is connected it starts a real session in the user's headset.**
 - Simulation also runs a one-shot D3D12 readback self-test (logs a centre pixel ~10 s in).

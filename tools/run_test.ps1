@@ -2,7 +2,7 @@
 # capture the game window without touching input focus (PrintWindow).
 param(
     [int]$Seconds = 60,
-    [string]$Stage = "F_SP103",
+    [string]$Stage = "F_SP103,0,5,-1", # Ordon Village, outside Sera's shop (point 0 is the ranch path: Link walks back out)
     [string[]]$Cvars = @("mod.com_noahsmaximum_dusklight__vr.simulateHmd=true", "game.enableFrameInterpolation=2"),
     [string]$Shot = "$PSScriptRoot\..\build\shot.png",
     [switch]$KeepRunning,
