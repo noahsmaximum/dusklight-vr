@@ -21,11 +21,17 @@ So we build Dusklight ourselves with an additive patch (`android/patch-dusklight
    Quest/Pico device metadata, and the runtime-broker `queries` entry the OpenXR loader needs.
 2. **Aurora** (`lib/webgpu/gpu.cpp`): request Dawn's shared-texture/shared-fence features when the
    GPU offers them (AHardwareBuffer, dma-buf, opaque FD, sync FD).
+3. **Exports** (`cmake/AndroidExports.cmake`): keep Aurora's symbols in the export list, so the mod
+   can hook frame delivery, the RmlUi panel and the render size by name as it does on Windows.
+4. **App identity**: own package name and label, so it installs beside the official app.
 
 Nothing is sent upstream; the patch is applied to a fresh checkout at build time. Dusklight is CC0,
 so building and sharing our own build is fine.
 
 ## Building the APK
+
+The APK ships the VR mod inside it (bundled like Dusklight's own mods), so there is nothing to
+install separately.
 
 Run the **Android VR APK** workflow from the Actions tab (input: the Dusklight tag, default
 `v2.0.1`). It mirrors Dusklight's own Android CI, applies the patch, builds the APK, signs it with a

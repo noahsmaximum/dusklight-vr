@@ -110,7 +110,6 @@ PY
     echo "aurora: patched"
 fi
 
-echo "Dusklight VR edition patch applied."
 
 # --- 3. Separate app identity -------------------------------------------------------------------
 # Own package name and label so the VR edition installs alongside the official app instead of
@@ -126,3 +125,19 @@ else
     grep -q "dev.twilitrealm.dusk.vr" "$gradle" || { echo "identity: applicationId not found" >&2; exit 1; }
     echo "identity: patched (dev.twilitrealm.dusk.vr)"
 fi
+
+# --- 4. Export Aurora's symbols ------------------------------------------------------------------
+# The Android link step filters exports through a generated version script, which drops Aurora's own
+# functions. The mod hooks several of them by name (frame delivery, the RmlUi panel, the headset
+# render size), so widen the export list. Costs a little symbol table, changes no behaviour.
+
+exports="$root/cmake/AndroidExports.cmake"
+if grep -q "_ZN6aurora" "$exports"; then
+    echo "exports: already patched"
+else
+    sed -i 's|            --extra-sym "Java_\*"|            --extra-sym "Java_*"\n            # Dusklight VR: the mod hooks Aurora internals by name.\n            --extra-sym "_ZN6aurora*"\n            --extra-sym "_ZNK6aurora*"|' "$exports"
+    grep -q "_ZN6aurora" "$exports" || { echo "exports: anchor not found" >&2; exit 1; }
+    echo "exports: patched"
+fi
+
+echo "Dusklight VR edition patch applied."
