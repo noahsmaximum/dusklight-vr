@@ -38,7 +38,9 @@ text = text.replace(
     '        android:version="1" />\n'
     # Quest blocks the launch with a "controllers required" dialog unless the app says it can run
     # without them.
-    '    <uses-feature android:name="oculus.software.handtracking" android:required="false" />',
+    '    <uses-feature android:name="oculus.software.handtracking" android:required="false" />\n'
+    # Tabletop see-through: without this feature Quest hides ALPHA_BLEND and XR_FB_passthrough.
+    '    <uses-feature android:name="com.oculus.feature.PASSTHROUGH" android:required="false" />',
     1,
 )
 
