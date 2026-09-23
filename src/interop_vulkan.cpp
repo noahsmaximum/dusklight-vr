@@ -28,7 +28,8 @@
 //     memory and into the Vulkan device OpenXR creates as a VkImage.
 //   - Dawn composites into them. Its EndAccess hands us sync-fd fences, which we import as Vulkan
 //     semaphores so the copy waits for that work.
-//   - The copy into the runtime's swapchain images runs on the OpenXR device.
+//   - The copy into the runtime's swapchain images runs on the OpenXR device; it signals a semaphore
+//     whose sync fd Dawn waits on before rendering into the targets again (no CPU stall).
 //
 // Needs a Dusklight build that enables Dawn's shared-texture features (android/patch-dusklight.sh).
 namespace vr::interop {
@@ -63,10 +64,17 @@ struct State {
 
     PFN_vkGetAndroidHardwareBufferPropertiesANDROID getAhbProperties = nullptr;
     PFN_vkImportSemaphoreFdKHR importSemaphoreFd = nullptr;
+    PFN_vkGetSemaphoreFdKHR getSemaphoreFd = nullptr;
+
+    // Our copy signals done[slot]; its sync fd becomes the fence Dawn waits on before rendering into
+    // the targets again, so neither side stalls on the CPU. Without export support: CPU wait.
+    std::array<VkSemaphore, kCopyRing> done{};
+    bool exportDone = false;
+    // Dawn fences imported for a copy, destroyed once that copy slot is reused.
+    std::array<std::vector<VkSemaphore>, kCopyRing> slotWaits{};
 
     XrGraphicsBindingVulkan2KHR binding{XR_TYPE_GRAPHICS_BINDING_VULKAN2_KHR};
     std::vector<FormatChoice> formats;
-    std::vector<VkSemaphore> waitSemaphores; // recycled, imported from Dawn's fences each frame
 };
 State g;
 
@@ -139,9 +147,9 @@ void barrier(VkCommandBuffer cmd, VkImage image, VkImageLayout from, VkImageLayo
         nullptr, 1, &b);
 }
 
-// Gives the texture back to Dawn for the next frame. Our copy has already completed on the CPU
-// timeline (see copy_to_swapchains), so Dawn needs nothing to wait on.
-bool begin_access_texture(TargetNative& native, WGPUTexture texture) {
+// Gives the texture back to Dawn for the next frame. `copyDone` is the fence for our copy out of it
+// (null when the copy already finished on the CPU timeline).
+bool begin_access_texture(TargetNative& native, WGPUTexture texture, WGPUSharedFence copyDone = nullptr) {
     if (native.accessOpen || texture == nullptr) {
         return true;
     }
@@ -153,7 +161,14 @@ bool begin_access_texture(TargetNative& native, WGPUTexture texture) {
     WGPUSharedTextureMemoryBeginAccessDescriptor begin = WGPU_SHARED_TEXTURE_MEMORY_BEGIN_ACCESS_DESCRIPTOR_INIT;
     begin.nextInChain = &layout.chain;
     begin.initialized = native.everUsed;
-    begin.fenceCount = 0;
+    const uint64_t signaled = 1; // sync fds are binary
+    if (copyDone != nullptr) {
+        begin.fenceCount = 1;
+        begin.fences = &copyDone;
+        begin.signaledValues = &signaled;
+    } else {
+        begin.fenceCount = 0;
+    }
     if (wgpuSharedTextureMemoryBeginAccess(native.memory, texture, &begin) != WGPUStatus_Success) {
         mods::log::error("wgpuSharedTextureMemoryBeginAccess failed");
         return false;
@@ -197,10 +212,19 @@ bool initialize(WGPUDevice device, WGPUAdapter adapter) {
 void shutdown() {
     wait_idle();
     if (g.vkDevice != VK_NULL_HANDLE) {
-        for (VkSemaphore s : g.waitSemaphores) {
-            vkDestroySemaphore(g.vkDevice, s, nullptr);
+        for (auto& waits : g.slotWaits) {
+            for (VkSemaphore s : waits) {
+                vkDestroySemaphore(g.vkDevice, s, nullptr);
+            }
+            waits.clear();
         }
-        g.waitSemaphores.clear();
+        for (VkSemaphore& s : g.done) {
+            if (s != VK_NULL_HANDLE) {
+                vkDestroySemaphore(g.vkDevice, s, nullptr);
+                s = VK_NULL_HANDLE;
+            }
+        }
+        g.exportDone = false;
         for (VkFence f : g.fences) {
             if (f != VK_NULL_HANDLE) {
                 vkDestroyFence(g.vkDevice, f, nullptr);
@@ -314,6 +338,7 @@ bool prepare_system(uintptr_t instance, uint64_t systemId, const void*& graphics
     g.getAhbProperties = device_proc<PFN_vkGetAndroidHardwareBufferPropertiesANDROID>(
         "vkGetAndroidHardwareBufferPropertiesANDROID");
     g.importSemaphoreFd = device_proc<PFN_vkImportSemaphoreFdKHR>("vkImportSemaphoreFdKHR");
+    g.getSemaphoreFd = device_proc<PFN_vkGetSemaphoreFdKHR>("vkGetSemaphoreFdKHR");
     if (g.getAhbProperties == nullptr || g.importSemaphoreFd == nullptr) {
         mods::log::error("Vulkan device is missing the AHardwareBuffer / sync-fd entry points");
         return false;
@@ -339,6 +364,21 @@ bool prepare_system(uintptr_t instance, uint64_t systemId, const void*& graphics
             return false;
         }
     }
+    // Exportable "copy done" semaphores (sync fd); fall back to the CPU wait if the driver can't.
+    VkPhysicalDeviceExternalSemaphoreInfo extInfo{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_SEMAPHORE_INFO};
+    extInfo.handleType = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_SYNC_FD_BIT;
+    VkExternalSemaphoreProperties extProps{VK_STRUCTURE_TYPE_EXTERNAL_SEMAPHORE_PROPERTIES};
+    vkGetPhysicalDeviceExternalSemaphoreProperties(g.physicalDevice, &extInfo, &extProps);
+    g.exportDone = g.getSemaphoreFd != nullptr &&
+                   (extProps.externalSemaphoreFeatures & VK_EXTERNAL_SEMAPHORE_FEATURE_EXPORTABLE_BIT) != 0;
+    for (uint32_t i = 0; i < kCopyRing && g.exportDone; ++i) {
+        VkExportSemaphoreCreateInfo exportInfo{VK_STRUCTURE_TYPE_EXPORT_SEMAPHORE_CREATE_INFO};
+        exportInfo.handleTypes = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_SYNC_FD_BIT;
+        VkSemaphoreCreateInfo sci{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
+        sci.pNext = &exportInfo;
+        g.exportDone = vk_ok(vkCreateSemaphore(g.vkDevice, &sci, nullptr, &g.done[i]), "vkCreateSemaphore (export)");
+    }
+    mods::log::info("Vulkan copy sync: {}", g.exportDone ? "semaphore handed to Dawn" : "CPU wait");
 
     g.binding = {XR_TYPE_GRAPHICS_BINDING_VULKAN2_KHR};
     g.binding.instance = g.instance;
@@ -542,6 +582,10 @@ bool copy_to_swapchains(const std::vector<CopyJob>& jobs) {
     VkFence fence = g.fences[slot];
     vkWaitForFences(g.vkDevice, 1, &fence, VK_TRUE, UINT64_MAX);
     vkResetFences(g.vkDevice, 1, &fence);
+    for (VkSemaphore s : g.slotWaits[slot]) { // that copy has finished waiting on them
+        vkDestroySemaphore(g.vkDevice, s, nullptr);
+    }
+    g.slotWaits[slot].clear();
     VkCommandBuffer cmd = g.commandBuffers[slot];
     vkResetCommandBuffer(cmd, 0);
     VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
@@ -573,19 +617,45 @@ bool copy_to_swapchains(const std::vector<CopyJob>& jobs) {
     submit.pWaitDstStageMask = waitStages.empty() ? nullptr : waitStages.data();
     submit.commandBufferCount = 1;
     submit.pCommandBuffers = &cmd;
-    const bool submitted = vk_ok(vkQueueSubmit(g.queue, 1, &submit, fence), "vkQueueSubmit");
-
-    // TODO(perf): hand Dawn a semaphore instead of waiting here (needs sync-fd export).
-    if (submitted) {
-        vkWaitForFences(g.vkDevice, 1, &fence, VK_TRUE, UINT64_MAX);
+    if (g.exportDone) {
+        submit.signalSemaphoreCount = 1;
+        submit.pSignalSemaphores = &g.done[slot];
     }
-    for (VkSemaphore s : waits) {
-        vkDestroySemaphore(g.vkDevice, s, nullptr);
+    const bool submitted = vk_ok(vkQueueSubmit(g.queue, 1, &submit, fence), "vkQueueSubmit");
+    // The waits stay alive until this slot's fence says the copy is done.
+    g.slotWaits[slot] = std::move(waits);
+
+    // Dawn may render into the targets again once the copy has read them: hand it our semaphore as
+    // a sync-fd fence, or (no export support / export failed) wait for the copy here.
+    WGPUSharedFence copyDone = nullptr;
+    if (submitted && g.exportDone) {
+        VkSemaphoreGetFdInfoKHR get{VK_STRUCTURE_TYPE_SEMAPHORE_GET_FD_INFO_KHR};
+        get.semaphore = g.done[slot];
+        get.handleType = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_SYNC_FD_BIT;
+        int fd = -1;
+        if (!vk_ok(g.getSemaphoreFd(g.vkDevice, &get, &fd), "vkGetSemaphoreFdKHR")) {
+            // The semaphore is left signalled and can't be reused: stay on the CPU wait from now on.
+            g.exportDone = false;
+            mods::log::warn("Vulkan copy sync: falling back to a CPU wait");
+        } else if (fd >= 0) { // -1: the copy has already completed
+            WGPUSharedFenceSyncFDDescriptor syncFd = WGPU_SHARED_FENCE_SYNC_FD_DESCRIPTOR_INIT;
+            syncFd.handle = fd;
+            WGPUSharedFenceDescriptor desc{};
+            desc.nextInChain = &syncFd.chain;
+            copyDone = wgpuDeviceImportSharedFence(g.device, &desc); // Dawn keeps a duplicate
+            close(fd);
+        }
+    }
+    if (submitted && copyDone == nullptr) {
+        vkWaitForFences(g.vkDevice, 1, &fence, VK_TRUE, UINT64_MAX);
     }
 
     // Give the targets back to Dawn for the next frame.
     for (const auto& job : jobs) {
-        begin_access_texture(*native_of(*job.source), job.source->texture);
+        begin_access_texture(*native_of(*job.source), job.source->texture, copyDone);
+    }
+    if (copyDone != nullptr) {
+        wgpuSharedFenceRelease(copyDone);
     }
     return submitted;
 }

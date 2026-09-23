@@ -18,9 +18,10 @@ Windows (`main`, released **v0.2.0**) — all user-tested in the headset:
 | Frame rate | 45 fps at 3584x2688 per eye on VDXR; GPU-bound. Render scale, or matching the eye aspect instead of 4:3, are the levers |
 
 Android / Quest 3 (`vr-shared`, in progress) — **see `docs/android.md`, that is the live document**:
-the session, the shared-buffer handoff and the mod load all work on device; the game segfaults in
-the first frame with any hook installed, and runs (audio, no image) with none. A bisect switch
-(`minimalHooks` cvar) is in place; next step is a `hookLevel` cvar to find the culprit.
+the game runs in the headset (Cinema mode confirmed, stable with every hook installed). The
+first-frame crash was an arm64 ABI mismatch in the `rmlui::record_frame` hook's return type, not a
+bad hook. Next up: verify the untested water / render-size / copy-sync fixes listed there, then
+measure performance (22 of 72 fps in Cinema before them).
 
 Windows regression risk from the Android work: `vr-shared` contains the fix for a real bug the
 refactor introduced — `xrCreateSession` was called without a system id, which breaks VR on Windows
@@ -170,8 +171,9 @@ the table with controllers, a sphere-based clip test instead of culling nothing.
 
 ## Picking this up again
 
-1. Read `docs/android.md` (device loop, bisect state, known gaps).
+1. Read `docs/android.md` (device loop, what is fixed vs still untested, known gaps).
 2. The Quest and the SDK are on this machine: `F:\Android\sdk` (adb in `platform-tools`), ROM already
    at `/storage/emulated/0/Download/tp-linkle.iso`, app installed as `dev.twilitrealm.dusk.vr`.
-3. Finish the hook bisect, then strip the temporary bring-up code listed in `docs/android.md`.
+3. Try the untested fixes on the headset (read the PROBE log once, then delete it), measure, then
+   strip the temporary bring-up code listed in `docs/android.md`.
 4. Before merging `vr-shared`: test it on the Windows headset (it carries the session-id fix).

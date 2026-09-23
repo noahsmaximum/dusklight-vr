@@ -4,39 +4,64 @@ Branch: `vr-shared` (not merged). Windows is unaffected; everything here is addi
 
 ## Where it stands (2026-09-23, tested on a Quest 3)
 
+**The game runs in the headset.** Cinema mode confirmed by eye; stable with every hook installed.
+
 Working on device:
 
-- The VR-edition app launches immersive, with the mod bundled inside; the mod loads and activates.
-- The ROM runs from the headset (`/storage/emulated/0/Download/tp-linkle.iso`).
-- `aurora::gfx::after_submit` resolves by name (the export patch works), so frame delivery is hooked.
-- **OpenXR session creates on Meta Quest 3, 1680x1760 per eye.**
-- **The AHardwareBuffer handoff works**: Dawn imports the shared memory and hands the texture back
-  and forth (needs the image-layout handshake, see below).
+- The VR-edition app launches immersive with the mod bundled; the mod loads and activates.
+- OpenXR session on Meta Quest 3 (1680x1760 per eye) goes IDLE → READY → FOCUSED and renders.
+- The AHardwareBuffer handoff between Dawn and the OpenXR Vulkan device.
+- Dusklight's UI panel finds its render target (4128x2208).
 
-Blocking bug:
+Fixed on the way (worth knowing, each looked like something else):
 
-- **With any of our hooks installed the game segfaults during the first frame; with none it runs
-  fine** (audio plays, nothing is drawn because the mod never submits a frame). The fault address
-  looks like a stack guard page, i.e. a detour that ends up calling itself.
-- Bisected so far: game hooks off *and* only the Aurora hooks left still crashes. Zero hooks is
-  stable. Next step is to narrow which of `aurora_begin_frame` (pre/post), `aurora_end_frame` (pre),
-  `aurora::gfx::after_submit` (post), `rmlui::record_frame` (post) and
-  `WebGPURenderInterface::BeginFrame` (pre) is responsible — add a `hookLevel` int cvar (0 none,
-  1 aurora frame hooks, 2 +after_submit, 3 +rmlui, 4 +game hooks) and work up.
+- **First-frame crash with any hook** — not a hook recursion. `aurora::rmlui::record_frame` returns
+  a struct holding a `wgpu::BindGroup`, which is non-trivial, so the callee writes the result
+  through the hidden return pointer (x8). Our mirror struct was trivial, so arm64 returned it in
+  x0/x1 and the trampoline never passed x8 on. The real function then wrote through a stale pointer.
+  Windows x64 returns both through memory, which is why it only broke here. **Hook signatures
+  must match the callee's calling convention exactly, not only its layout.**
+  `RmlRecordedFrame` now has a user-provided destructor to force the same return path.
+- **Session stuck in IDLE (three loading dots)** — the instance got the Application, not the
+  Activity. Meta's runtime follows the Activity's lifecycle. We now fetch `SDLActivity.mSingleton`
+  (falling back to `SDL.getContext()`) through the app's class loader; native threads can't
+  `FindClass` app classes.
+- **fdsan abort in `vkDestroySemaphore`** — Dawn's exported sync fd still belongs to its fence;
+  a Vulkan import takes ownership. Import a `dup()`.
+- **"Dusklight UI unavailable"** — `aurora::rmlui::s_renderTarget` is in an anonymous namespace,
+  so there is no symbol for it on Android. The target is now taken from
+  `WebGPURenderInterface::BeginFrame`'s argument (by reference) on every platform.
 
-Other known gaps on Android:
+Built but **not yet tried on the headset** (next session, first thing):
 
-- Hooks declared with MSVC-decorated names don't resolve: `J3DUClipper::clip` (both overloads) and
-  `J3DTexMtx::calcTexMtx`. They need Itanium (`_ZN...`) names under `#ifdef __ANDROID__`, which
-  costs tabletop culling and the water texgen fix until done.
-- "Dusklight UI unavailable in the headset" is logged, so one of the RmlUi lookups fails even though
-  Aurora symbols are exported — check which.
-- `XR_FB_passthrough` and `ALPHA_BLEND` are both reported unavailable, so tabletop see-through has no
-  transparent background yet (may need a Quest passthrough permission in the manifest).
+- **Water in stereo/tabletop, and tabletop culling**: the three overloaded hooks now use Itanium
+  names on non-Windows (`J3DUClipper::clip` ×2, `J3DTexMtx::calcTexMtx`).
+- **Per-eye material refresh**: `callbacks_run` has no symbol on Android (clang inlined its only
+  call site). Fallback `interp_mirror` in `render_hooks.cpp` hooks
+  `dusk::interp::add_interpolation_callback` (both overloads) and `begin_sim_tick`, and keeps its
+  own copy of the list following the game's rules. Log line on success: "Per-eye material refresh:
+  mirrored interpolation callbacks".
+- **Cinema render size**: the game rendered at the full 4128x2208 window. On Android, Cinema now
+  renders at roughly what the virtual screen can show (about 1400x788 at the default screen size).
+  Log line: "Rendering at WxH for the headset".
+- **No CPU stall in the copy**: the Vulkan copy signals a semaphore exported as a sync fd. Dawn
+  imports it as the fence to wait on before rendering into the targets again. Log line:
+  "Vulkan copy sync: semaphore handed to Dawn" (or "CPU wait" as a fallback).
+- A temporary `PROBE` loop in `render_hooks.cpp` `install()` logs which interp/clip/texmtx names
+  resolve. Read its output once, then delete it.
+
+Performance before those fixes: **22 of 72 fps in Cinema**, app GPU time about 36 ms (VrApi logcat
+line `FPS=22/72 ... App=36ms`). Read it with `adb logcat -d | grep "VrApi.*FPS="`.
+
+Other known gaps:
+
+- `XR_FB_passthrough` / `ALPHA_BLEND` were hidden because the manifest lacked
+  `com.oculus.feature.PASSTHROUGH`. The patch now declares it; this needs a new APK build.
 - Each CI run signs the APK with a fresh key, so installs need an uninstall first. Add a fixed
   sideload keystore to the repo.
-- Temporary bring-up code to remove when the crash is fixed: `VR_MARK` markers, the painter depth
-  counter, the painter pointer log, and the `minimalHooks` cvar with its `gameHooks` gate.
+- Temporary bring-up code to remove: `VR_MARK` markers, the painter depth counter, the
+  `mark: first copy_to_swapchains` log, the `PROBE` loop, and possibly the `hookLevel` cvar
+  (cheap to keep as a diagnostic).
 
 ## The device loop (no APK rebuild needed)
 
@@ -50,11 +75,14 @@ adb shell am force-stop dev.twilitrealm.dusk.vr
 adb logcat -c
 adb shell "am start -n dev.twilitrealm.dusk.vr/dev.twilitrealm.dusk.DuskActivity --es dusk_args \
   '--dvd /storage/emulated/0/Download/tp-linkle.iso --mods /storage/emulated/0/Download/dusk-mods \
-   --cvar mod.com_noahsmaximum_dusklight__vr.mode=0 \
-   --cvar mod.com_noahsmaximum_dusklight__vr.minimalHooks=true'"
+   --cvar mod.com_noahsmaximum_dusklight__vr.mode=2'"
 sleep 30
-adb logcat -d | grep -iE "noahsmaximum|signal 11|aurora::gpu"
+adb logcat -d | grep -iE "noahsmaximum|signal (6|11)|SESSION_STATE"
+adb logcat -d | grep "VrApi.*FPS=" | tail -3   # frame rate / GPU time
 ```
+
+`mode`: 0 off, 1 stereo, 2 cinema, 3 tabletop. `hookLevel` (default 4) bisects hook crashes:
+0 none, 1 Aurora frame hooks, 2 + frame delivery, 3 + Dusklight UI, 4 everything.
 
 Notes:
 
@@ -62,10 +90,11 @@ Notes:
   commas in paths** (that is why the ROM was renamed).
 - The app needs storage permission once:
   `adb shell appops set dev.twilitrealm.dusk.vr MANAGE_EXTERNAL_STORAGE allow`.
-- Quest refuses to launch VR apps while the controllers are asleep ("controllers required" dialog).
-  The manifest patch now declares hand tracking optional, which should stop that.
-- Crashes: `adb logcat -d | grep -A25 "backtrace:"`. Stacks are usually one frame (stack overflow),
-  so prefer bisecting with cvars over reading tombstones.
+- The headset must be awake: `adb shell dumpsys power | grep mWakefulness` must say `Awake`.
+  Asleep, or with the controllers asleep, the launch silently does nothing.
+- Crashes: `adb logcat -d | grep -A25 "backtrace:"`. Symbolize our frames with
+  `llvm-symbolizer --obj=build-android/dusklight_vr.so -C -f -p 0x<pc>` (NDK `bin/`). A
+  one-frame stack inside `libmain.so` usually means a hook signature/ABI mismatch.
 - Quoting: run `am start` through `adb shell "..."` so the device shell keeps the argument string
   together; `MSYS_NO_PATHCONV=1` stops Git Bash rewriting `/storage/...` paths.
 
@@ -121,15 +150,17 @@ Nothing is upstreamed; Dusklight is CC0, so our own build is fine to share.
   the process. `everUsed` tracks the first access (`initialized = false`, layout `UNDEFINED`).
 - `EndAccess` returns sync-fd fences; they are imported as Vulkan semaphores so the copy waits for
   Dawn's work. The copy into the swapchain images runs on the OpenXR device
-  (`src/interop_vulkan.cpp`).
-- `copy_to_swapchains` currently waits on a CPU fence before handing buffers back to Dawn. Correct
-  but a per-frame stall; replace with an exported sync-fd semaphore later.
+  (`src/interop_vulkan.cpp`). Imported semaphores stay alive until that copy slot's fence is next
+  waited on.
+- The copy signals `done[slot]`, exported as a sync fd and imported into Dawn
+  (`wgpuDeviceImportSharedFence`, which keeps its own duplicate) as the fence for the next
+  `BeginAccess`. If the driver can't export, or an export fails, it falls back to a CPU fence wait.
 
-## Still to do (after the crash)
+## Still to do
 
-- Controllers: Dusklight already sees both Quest controllers as SDL gamepads, so this may need
-  little or nothing — verify once something renders.
+- Verify the four untested fixes above; then measure Cinema and Stereo again.
+- Performance, if still short: `renderScalePercent` for stereo, eye-aspect EFB instead of 4:3, the
+  HUD capture's extra passes, and `game.enableFrameInterpolation` (unlimited may cost more than it
+  gives with xrWaitFrame pacing).
+- Controllers: Dusklight already sees both Quest controllers as SDL gamepads; verify in play.
 - Session lifecycle: focus loss, pause/resume, headset removal.
-- Performance: drawing twice plus the HUD capture copies is expensive on mobile. Cinema mode first,
-  then stereo once measured.
-- Not available on Android yet: the headset render-size override and the Dusklight UI panel.

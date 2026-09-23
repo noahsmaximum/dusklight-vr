@@ -29,6 +29,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <memory>
 #include <mutex>
 #include <string_view>
 #include <type_traits>
@@ -51,10 +52,20 @@ DEFINE_HOOK_SYMBOL("src/m_Do/m_Do_graphic.cpp#motionBlure", void(view_class*), M
 DEFINE_HOOK_SYMBOL("src/m_Do/m_Do_graphic.cpp#trimming", void(view_class*, view_port_class*), Trimming);
 DEFINE_HOOK_SYMBOL("mDoLib_clipper::setup", void(f32, f32, f32, f32), ClipperSetup);
 DEFINE_HOOK_SYMBOL("aurora::window::get_window_size", AuroraWindowSize(), GetWindowSize);
-// Tabletop: the two J3DUClipper::clip overloads (sphere, box) by decorated name, the sky lists, fog.
-DEFINE_HOOK_SYMBOL("?clip@J3DUClipper@@QEBAHPEAY03$$CBMUVec@@M@Z", int(const void*, const f32 (*)[4], Vec, f32),
+// Overloaded members are named by their decorated names, which differ per ABI (MSVC / Itanium).
+#ifdef _WIN32
+#define VR_SYM_CLIP_SPHERE "?clip@J3DUClipper@@QEBAHPEAY03$$CBMUVec@@M@Z"
+#define VR_SYM_CLIP_BOX "?clip@J3DUClipper@@QEBAHPEAY03$$CBMPEAUVec@@1@Z"
+#define VR_SYM_CALC_TEX_MTX "?calcTexMtx@J3DTexMtx@@QEAAXQEAY03$$CBM@Z"
+#else
+#define VR_SYM_CLIP_SPHERE "_ZNK11J3DUClipper4clipEPA4_Kf3Vecf"
+#define VR_SYM_CLIP_BOX "_ZNK11J3DUClipper4clipEPA4_KfP3VecS4_"
+#define VR_SYM_CALC_TEX_MTX "_ZN9J3DTexMtx10calcTexMtxEPA4_Kf"
+#endif
+// Tabletop: the two J3DUClipper::clip overloads (sphere, box), the sky lists, fog.
+DEFINE_HOOK_SYMBOL(VR_SYM_CLIP_SPHERE, int(const void*, const f32 (*)[4], Vec, f32),
     ClipSphere);
-DEFINE_HOOK_SYMBOL("?clip@J3DUClipper@@QEBAHPEAY03$$CBMPEAUVec@@1@Z", int(const void*, const f32 (*)[4], Vec*, Vec*),
+DEFINE_HOOK_SYMBOL(VR_SYM_CLIP_BOX, int(const void*, const f32 (*)[4], Vec*, Vec*),
     ClipBox);
 DEFINE_HOOK_SYMBOL("dComIfGd_drawOpaListSky", void(), DrawOpaSky);
 DEFINE_HOOK_SYMBOL("dComIfGd_drawXluListSky", void(), DrawXluSky);
@@ -65,8 +76,18 @@ DEFINE_HOOK_SYMBOL("C_MTXLightPerspective", void(f32 (*)[4], f32, f32, f32, f32,
 DEFINE_HOOK_SYMBOL("src/d/d_camera.cpp#widezoom_correction", void(void*, f32), WidezoomCorrection);
 // Map/BG water materials: projection texgen computed from the game view in the actors' draw.
 DEFINE_HOOK_SYMBOL("dKy_bg_MAxx_proc", void(void*), BgMaterialProc);
+// Frame interpolation's callback list, mirrored where callbacks_run itself has no symbol (clang
+// inlines its only call site). The overloads need their decorated names.
+using InterpCallback = void (*)(void*);
+DEFINE_HOOK_SYMBOL("dusk::interp::begin_sim_tick", void(), InterpBeginSimTick);
+#ifndef _WIN32
+DEFINE_HOOK_SYMBOL("_ZN4dusk6interp26add_interpolation_callbackEPFvPvES1_", void(InterpCallback, void*),
+    InterpAddCallback);
+DEFINE_HOOK_SYMBOL("_ZN4dusk6interp26add_interpolation_callbackEPFvPvES1_NSt6__ndk110shared_ptrIvEE",
+    void(InterpCallback, void*, std::shared_ptr<void>), InterpAddOwnedCallback);
+#endif
 // View-projection texture matrices (J3D modes 3/9): effect matrix x view x model.
-DEFINE_HOOK_SYMBOL("?calcTexMtx@J3DTexMtx@@QEAAXQEAY03$$CBM@Z", void(J3DTexMtx*, const f32 (*)[4]), CalcTexMtx);
+DEFINE_HOOK_SYMBOL(VR_SYM_CALC_TEX_MTX, void(J3DTexMtx*, const f32 (*)[4]), CalcTexMtx);
 
 // Dusklight's own UI (RmlUi) renders into aurora::rmlui::s_renderTarget during aurora_end_frame.
 // record_frame returns {bind group (null when nothing was drawn), overlay}; mirrored layouts below.
@@ -184,6 +205,101 @@ CallbacksRunFn g_callbacksRun = nullptr;
 bool g_rerunningCallbacks = false;
 // Models passed to dKy_bg_MAxx_proc by this frame's actor draws (cleared after the painter).
 std::vector<void*> g_bgModels;
+
+// Our copy of frame interpolation's callback list, for builds where callbacks_run can't be called.
+// It follows the game's rules: add_interpolation_callback accepts only while capturing a sim tick
+// outside a presentation, begin_sim_tick clears (when interpolating), and the whole history is
+// dropped when interpolation stops or the presentation epoch moves.
+namespace interp_mirror {
+struct Work {
+    InterpCallback fn;
+    void* work;
+    std::shared_ptr<void> owner; // keeps the work alive exactly as the game's entry does
+};
+struct FrameTiming { // dusk::game_clock::FrameTiming
+    float dt;
+    bool interpolating;
+    bool separatePresentation;
+    int numSimTicks;
+    uint64_t presentationEpoch;
+};
+using BoolFn = bool (*)();
+
+std::vector<Work> g_list;
+uint64_t g_epoch = 0;
+BoolFn g_enabled = nullptr;
+BoolFn g_shouldCapture = nullptr;
+BoolFn g_presentationActive = nullptr;
+const FrameTiming* g_timing = nullptr;
+
+void sync_history() {
+    if (!g_timing->interpolating || g_timing->presentationEpoch != g_epoch) {
+        g_list.clear();
+        g_epoch = g_timing->presentationEpoch;
+    }
+}
+
+bool accepts(InterpCallback fn) {
+    return fn != nullptr && g_shouldCapture() && !g_presentationActive();
+}
+
+[[maybe_unused]] HookAction begin_sim_tick_pre(ModContext*, void*, void*, void*) {
+    if (g_enabled()) {
+        g_list.clear();
+    }
+    return HOOK_CONTINUE;
+}
+
+[[maybe_unused]] HookAction add_pre(ModContext*, void* args, void*, void*) {
+    const auto fn = mods::arg<InterpCallback>(args, 0);
+    if (accepts(fn)) {
+        sync_history();
+        g_list.push_back({fn, mods::arg<void*>(args, 1), {}});
+    }
+    return HOOK_CONTINUE;
+}
+
+[[maybe_unused]] HookAction add_owned_pre(ModContext*, void* args, void*, void*) {
+    const auto fn = mods::arg<InterpCallback>(args, 0);
+    if (accepts(fn)) {
+        sync_history();
+        g_list.push_back({fn, mods::arg<void*>(args, 1), mods::arg_ref<std::shared_ptr<void>>(args, 2)});
+    }
+    return HOOK_CONTINUE;
+}
+
+void run() {
+    sync_history();
+    for (const Work& w : g_list) {
+        w.fn(w.work);
+    }
+}
+
+bool install() {
+#ifdef _WIN32
+    return false; // callbacks_run resolves on Windows
+#else
+    void* enabled = nullptr;
+    void* shouldCapture = nullptr;
+    void* presentationActive = nullptr;
+    void* timing = nullptr;
+    if (svc_hook->resolve(mod_ctx, "dusk::interp::is_enabled", &enabled, nullptr) != MOD_OK ||
+        svc_hook->resolve(mod_ctx, "dusk::interp::should_capture", &shouldCapture, nullptr) != MOD_OK ||
+        svc_hook->resolve(mod_ctx, "dusk::interp::is_presentation_active", &presentationActive, nullptr) != MOD_OK ||
+        svc_hook->resolve(mod_ctx, "dusk::game_clock::g_frameTiming", &timing, nullptr) != MOD_OK)
+    {
+        return false;
+    }
+    g_enabled = reinterpret_cast<BoolFn>(enabled);
+    g_shouldCapture = reinterpret_cast<BoolFn>(shouldCapture);
+    g_presentationActive = reinterpret_cast<BoolFn>(presentationActive);
+    g_timing = static_cast<const FrameTiming*>(timing);
+    return mods::hook::add_pre<InterpBeginSimTick>(begin_sim_tick_pre) == MOD_OK &&
+           mods::hook::add_pre<InterpAddCallback>(add_pre) == MOD_OK &&
+           mods::hook::add_pre<InterpAddOwnedCallback>(add_owned_pre) == MOD_OK;
+#endif
+}
+} // namespace interp_mirror
 
 // Dusklight UI state from the last aurora_end_frame (game thread).
 const RmlRenderTarget* g_rmlTarget = nullptr;
@@ -675,6 +791,21 @@ void update_efb_override() {
         h = xr::eye_height() & ~1u;
         w = ((h * 4 + 2) / 3) & ~1u;
     }
+#ifdef __ANDROID__
+    // Cinema on a standalone headset: the app window is huge (4128x2208 on a Quest 3) but the
+    // virtual screen covers only part of each eye, so render at about what the headset can resolve
+    // there: eye pixels across the screen's angular width (typical per-eye tangent span ~2.4), with
+    // some supersampling for the quad layer's filtering.
+    else if (f.mode == Mode::Cinema && xr::session_running() && xr::eye_width() != 0) {
+        constexpr float kEyeTanSpan = 2.4f;
+        constexpr float kSupersample = 1.5f;
+        const auto& cfg = config();
+        const float px = static_cast<float>(xr::eye_width()) * (cfg.screenWidth / cfg.screenDistance) / kEyeTanSpan *
+                         kSupersample;
+        w = static_cast<uint32_t>(std::clamp(px, 960.0f, 2560.0f)) & ~1u;
+        h = ((w * 9 + 8) / 16) & ~1u;
+    }
+#endif
     if (w == g_efbWidth.load() && h == g_efbHeight.load()) {
         return;
     }
@@ -1332,15 +1463,33 @@ bool install() {
         check<CalcTexMtx>(mods::hook::add_post<CalcTexMtx>(calc_tex_mtx_post), "J3DTexMtx::calcTexMtx", false);
         // Without the widezoom guard the camera's callback would rewrite the eye view, so only use
         // the per-eye material refresh when both are available.
-        void* callbacksFn = nullptr;
-        if (mods::hook::add_pre<WidezoomCorrection>(widezoom_pre) == MOD_OK &&
-            svc_hook->resolve(mod_ctx, "src/dusk/interp/frame_interpolation.cpp#callbacks_run", &callbacksFn,
-                nullptr) == MOD_OK)
-        {
-            g_callbacksRun = reinterpret_cast<CallbacksRunFn>(callbacksFn);
-        } else {
+        if (mods::hook::add_pre<WidezoomCorrection>(widezoom_pre) == MOD_OK) {
+            void* callbacksFn = nullptr;
+            if (svc_hook->resolve(mod_ctx, "src/dusk/interp/frame_interpolation.cpp#callbacks_run", &callbacksFn,
+                    nullptr) == MOD_OK)
+            {
+                g_callbacksRun = reinterpret_cast<CallbacksRunFn>(callbacksFn);
+            } else if (interp_mirror::install()) {
+                g_callbacksRun = interp_mirror::run;
+                mods::log::info("Per-eye material refresh: mirrored interpolation callbacks");
+            }
+        }
+        if (g_callbacksRun == nullptr) {
             mods::log::warn("per-eye material refresh unavailable; water may look wrong in stereo");
         }
+    }
+
+    // PROBE
+    for (const char* n : {"src/dusk/interp/frame_interpolation.cpp#callbacks_run", "src/d/d_camera.cpp#widezoom_correction",
+             "widezoom_correction", "dusk::interp::add_interpolation_callback", "dusk::interp::begin_sim_tick",
+             "dusk::interp::begin_presentation", "dusk::interp::is_enabled", "dusk::interp::is_presentation_active",
+             "dusk::game_clock::is_sim_frame", "dusk::game_clock::g_frameTiming",
+             "_ZN4dusk6interp26add_interpolation_callbackEPFvPvES1_",
+             "_ZN9J3DTexMtx10calcTexMtxEPA4_Kf", "_ZNK11J3DUClipper4clipEPA4_Kf3Vecf",
+             "aurora::webgpu::refresh_surface", "dusk::config::load_arg_override"}) {
+        void* a = nullptr;
+        const ModResult r = svc_hook->resolve(mod_ctx, n, &a, nullptr);
+        mods::log::info("PROBE {} -> {} {}", n, static_cast<int>(r), a);
     }
 
     void* refreshFn = nullptr;
