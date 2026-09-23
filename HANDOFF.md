@@ -5,17 +5,27 @@ Latest release: **v0.2.0** (published by CI on tag push; tags with a `-` suffix 
 
 ## Status
 
+Windows (`main`, released **v0.2.0**) — all user-tested in the headset:
+
 | Area | State |
 | --- | --- |
-| Per-eye stereo, 6DOF, level horizon | Working in headset (user-tested on Virtual Desktop) |
-| HUD quad layer | Fixed (was shrunk into a corner); user reports "looking good" |
-| Headset render size (4:3 at eye height) | Shipped; 31 fps report was before this. **Waiting on the user's panel stats line** (fps / xrWaitFrame / both-eyes ms / render size) to judge GPU vs pacing |
-| Cinema mode, recenter, menu lock | Implemented, not explicitly confirmed in headset |
-| **Tabletop mode** | Implemented on branch `tabletop`; verified in simulation (diorama, cut, alpha); **not yet tried in a headset** (see checklist below) |
+| Per-eye stereo, 6DOF, level horizon | Working |
+| HUD quad layer, menus, cinema screen | Working |
+| Tabletop mode (diorama + see-through) | Working; VDXR offers no passthrough, so the background uses the chroma-key colour |
+| Water / reflections in VR | Fixed (three separate causes, see below) |
+| Presets, colour picker, table X/rotation | Working |
+| Dusklight's own menus on a panel in VR | Working |
+| Frame rate | 45 fps at 3584x2688 per eye on VDXR; GPU-bound. Render scale, or matching the eye aspect instead of 4:3, are the levers |
 
-Runtime on the user's machine: Virtual Desktop (VDXR). It recommends 2688 px tall per eye, so the
-mod renders 3584x2688 twice per frame; "Render scale" in the panel lowers it (takes effect when
-the session restarts).
+Android / Quest 3 (`vr-shared`, in progress) — **see `docs/android.md`, that is the live document**:
+the session, the shared-buffer handoff and the mod load all work on device; the game segfaults in
+the first frame with any hook installed, and runs (audio, no image) with none. A bisect switch
+(`minimalHooks` cvar) is in place; next step is a `hookLevel` cvar to find the culprit.
+
+Windows regression risk from the Android work: `vr-shared` contains the fix for a real bug the
+refactor introduced — `xrCreateSession` was called without a system id, which breaks VR on Windows
+too (simulation never creates a session, so it went unnoticed). **`vr-shared` has not been tried in
+the Windows headset yet**; do that before merging.
 
 ## Architecture (all through mod services/hooks — no patched Dusklight/Aurora)
 
@@ -146,3 +156,22 @@ How it works (see README "How it works" for the one-line version):
 
 **Ideas not done yet:** roof/ceiling cut in interiors (a height cap), a table rim or base, grab-to-move
 the table with controllers, a sphere-based clip test instead of culling nothing.
+
+## Cross-platform layout (since the Android work)
+
+- `src/interop.hpp` is the graphics-handoff interface; `interop_d3d12.cpp` (Windows) and
+  `interop_vulkan.cpp` (Android) implement it, chosen by CMake. `xr_runtime.cpp` is API-agnostic.
+- Frame delivery hooks `aurora::gfx::after_submit` on every platform; the Windows import-table hook
+  on `wgpuQueueSubmit` is only a fallback.
+- Android extras: `src/android_loader.cpp` (OpenXR loader init via JNI),
+  `android/patch-dusklight.sh` (VR-edition build), `.github/workflows/android-apk.yml`.
+- `tools/run_test.ps1` sets `DUSKLIGHT_VR_NO_XR=1`, which now skips only the OpenXR instance, so
+  simulation still exercises the whole GPU copy path.
+
+## Picking this up again
+
+1. Read `docs/android.md` (device loop, bisect state, known gaps).
+2. The Quest and the SDK are on this machine: `F:\Android\sdk` (adb in `platform-tools`), ROM already
+   at `/storage/emulated/0/Download/tp-linkle.iso`, app installed as `dev.twilitrealm.dusk.vr`.
+3. Finish the hook bisect, then strip the temporary bring-up code listed in `docs/android.md`.
+4. Before merging `vr-shared`: test it on the Windows headset (it carries the session-id fix).
