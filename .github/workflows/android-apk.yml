@@ -10,6 +10,10 @@ on:
         description: Dusklight tag or branch to build
         default: v2.0.1
         type: string
+      mod_ref:
+        description: Branch of this repo to build the mod from
+        default: main
+        type: string
 
 env:
   ANDROID_NDK_VERSION: "29.0.14206865"
@@ -22,6 +26,7 @@ jobs:
       - name: Check out the mod (for the patch script)
         uses: actions/checkout@v7
         with:
+          ref: ${{inputs.mod_ref}}
           path: mod
 
       - name: Check out Dusklight
