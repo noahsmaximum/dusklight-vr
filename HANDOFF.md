@@ -1,32 +1,30 @@
 # Dusklight VR — handoff
 
 Repo: https://github.com/noahsmaximum/dusklight-vr (local: `C:\Users\Noah\Projects\dusklight-vr`)
-Latest release: **v0.2.0** (published by CI on tag push; tags with a `-` suffix could be marked prerelease by hand).
+Latest release: **v0.3.0** (Windows + Quest 3; published by CI on tag push, the Quest APK is built by
+the manual "Android VR APK" workflow from the tag and attached with `gh release upload`).
 
 ## Status
 
-Windows (`main`, released **v0.2.0**) — all user-tested in the headset:
+`main` and `vr-shared` are identical at v0.3.0; new work can continue on either.
+
+Windows — user-tested in the headset (v0.3.0 re-checked through Virtual Desktop):
 
 | Area | State |
 | --- | --- |
 | Per-eye stereo, 6DOF, level horizon | Working |
 | HUD quad layer, menus, cinema screen | Working |
 | Tabletop mode (diorama + see-through) | Working; VDXR offers no passthrough, so the background uses the chroma-key colour |
-| Water / reflections in VR | Fixed (three separate causes, see below) |
+| Water / reflections in VR | Fixed (see below); the Ordon Village river fix (post-transform texture matrices) is not yet confirmed in the headset |
 | Presets, colour picker, table X/rotation | Working |
 | Dusklight's own menus on a panel in VR | Working |
-| Frame rate | 45 fps at 3584x2688 per eye on VDXR; GPU-bound. Render scale, or matching the eye aspect instead of 4:3, are the levers |
+| Frame rate | 45 fps at 3584x2688 per eye on VDXR; GPU-bound. Render scale is the lever |
 
-Android / Quest 3 (`vr-shared`, in progress) — **see `docs/android.md`, that is the live document**:
-the game runs in the headset (Cinema mode confirmed, stable with every hook installed). The
-first-frame crash was an arm64 ABI mismatch in the `rmlui::record_frame` hook's return type, not a
-bad hook. Next up: verify the untested water / render-size / copy-sync fixes listed there, then
-measure performance (22 of 72 fps in Cinema before them).
-
-Windows regression risk from the Android work: `vr-shared` contains the fix for a real bug the
-refactor introduced — `xrCreateSession` was called without a system id, which breaks VR on Windows
-too (simulation never creates a session, so it went unnoticed). **`vr-shared` has not been tried in
-the Windows headset yet**; do that before merging.
+Quest 3 (standalone, experimental) — **see `docs/android.md`, the live document**: stereo, cinema and
+the UI panel work on device; water confirmed by the user. Stereo 36 fps at 60% render scale (Android
+default), cinema mostly 72. Untested: tabletop passthrough (needs the v0.3.0 APK), pause/resume, the
+in-headset disc picker. Next big item: SpaceWarp (`XR_FB_space_warp`) with camera-motion vectors
+from per-eye depth, to display 72 while rendering 36.
 
 ## Architecture (all through mod services/hooks — no patched Dusklight/Aurora)
 
@@ -122,20 +120,25 @@ How it works (see README "How it works" for the one-line version):
 - **VDXR (Virtual Desktop) reports neither XR_FB_passthrough nor ALPHA_BLEND** (confirmed 2026-09-21), so the
   transparent area is filled with the "Background without passthrough" colour (black / green / magenta)
   for chroma-key passthrough tools.
-- **Water / refraction** (all modes). Three separate causes of the "portal" water:
+- **Water / refraction** (all modes). Three causes of the "portal" water:
   1. `drawDepth2` (the DOF pass) also makes the framebuffer copy the water samples. Never skip it; DOF
      is turned off through the `game.depthOfFieldMode=0` override instead.
   2. View-dependent texture matrices are computed before the painter, using the game view:
-     - frame interpolation `callbacks_run` (`calcMaterial` for recorded models)
+     - frame interpolation `callbacks_run` (`calcMaterial` for recorded models; on Android it is inlined
+       away, so `interp_mirror` keeps a copy of the list from `add_interpolation_callback`)
      - `dKy_bg_MAxx_proc` for map water (map models are recorded per frame; after it runs, `calcMaterial` + `diff` re-patch the display lists).
      Both are re-run per eye with `j3dSys` set to the eye view. The camera's `widezoom_correction` callback is skipped during the re-run.
   3. The effect matrices project with the game FOV. `view_class` fovy/aspect stay the game's during the eye loop, and:
      - `J3DTexMtx::calcTexMtx` pre/post (modes 3/9) patches effect x Pg^-1 x Pe.
+     - `J3DTexMtx::calcPostTexMtx` gets the same patch: models flagged for post-transform texture
+       matrices (flag 0x20) never go through `calcTexMtx` (this was the Ordon Village river).
      - `C_MTXLightPerspective` (direct GX users: particles, rain effects) is rewritten from Pe, except during the re-run.
   Verified in simulation at Ordon Spring (`--stage F_SP104,1,0,-1`), Stereo and Tabletop.
 
-- **Dusklight UI in the headset**: post-hook `aurora::rmlui::record_frame` (drew anything?) + the
-  `aurora::rmlui::s_renderTarget` data symbol (layout mirrored as `RmlRenderTarget`). The view is AddRef'd
+- **Dusklight UI in the headset**: post-hook `aurora::rmlui::record_frame` (drew anything?; its return type
+  mirror must be non-trivial like Aurora's, or arm64 returns it in registers and the callee writes through
+  a stale pointer) + the render target, taken from `WebGPURenderInterface::BeginFrame`'s argument (the
+  `aurora::rmlui::s_renderTarget` static has no symbol on Android; layout mirrored as `RmlRenderTarget`). The view is AddRef'd
   on the game thread and released by the worker; it is blitted premultiplied into quad slot `kQuadUi`, world-locked
   in front of the head when UI opens (1 frame late: RmlUi renders after our composite is queued).
   Menus with a backdrop blur make RmlUi render the whole scene as base layer; during a session a pre-hook on
