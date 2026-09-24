@@ -33,6 +33,7 @@ struct EyeParams {
     float taper;             // the cylinder closes over this distance in front of Link
     float margin;            // nothing closer than this in front of Link is cut
     float floor;             // nothing below this height is cut (the ground under Link)
+    float body;              // nothing this close to Link's body (feet to head) is cut
     float fadeNear;          // geometry closer to the eye than this is gone...
     float fadeFar;           // ...and fully visible from here (fadeFar <= fadeNear: no fade)
 };

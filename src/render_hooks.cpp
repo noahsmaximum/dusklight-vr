@@ -597,7 +597,12 @@ float link_coverage(const fopAc_ac_c& player, Vec3 eye) {
     return static_cast<float>(blocked) / static_cast<float>(total);
 }
 
-float g_xrayCoverage = 0.0f; // this frame's link_coverage (computed at the first eye)
+// Coverage eased over a few frames: immediate enough to follow Link, without stepping in 1/15ths.
+struct XrayCoverage {
+    float amount = 0.0f;
+    int64_t lastTicks = 0;
+};
+XrayCoverage g_xrayCoverage;
 
 // Tabletop x-ray for the eye apply_eye just set up: uploads its data. The x-ray fog itself runs
 // from SCENE_BEGIN (start_xray; offscreen renders before it, such as the minimap, stay untouched)
@@ -627,14 +632,21 @@ void begin_xray(const view_class& v, const gpu::CutParams& cut) {
     p.targetHeight = static_cast<float>(h);
     if (f.eye == 0) {
         // Once per frame, from the first eye (the eyes are a few centimetres apart).
-        g_xrayCoverage = cfg.tableXray ? link_coverage(*player, Vec3{p.eye[0], p.eye[1], p.eye[2]}) : 0.0f;
+        const float target = cfg.tableXray ? link_coverage(*player, Vec3{p.eye[0], p.eye[1], p.eye[2]}) : 0.0f;
+        const int64_t now = now_ticks();
+        const float dt = g_xrayCoverage.lastTicks != 0
+            ? std::clamp(static_cast<float>(ticks_to_ms(now - g_xrayCoverage.lastTicks)) / 1000.0f, 0.0f, 0.1f)
+            : 0.0f;
+        g_xrayCoverage.lastTicks = now;
+        g_xrayCoverage.amount += (target - g_xrayCoverage.amount) * (1.0f - std::exp(-dt * 12.0f));
     }
-    // The cylinder follows how much of Link is hidden, frame by frame.
-    p.radius = cfg.tableXrayRadius * std::min(1.0f, g_xrayCoverage * 1.25f);
+    // The cylinder follows how much of Link is hidden.
+    p.radius = cfg.tableXrayRadius * std::min(1.0f, g_xrayCoverage.amount * 1.25f);
     p.radiusAlphaTested = cfg.tableXray ? cfg.tableXrayRadius : 0.0f;
     p.taper = cfg.tableXrayRadius * 0.5f;
     p.margin = 30.0f;
     p.floor = player->current.pos.y + 20.0f; // his feet, plus small steps and uneven ground
+    p.body = 50.0f;                          // Link's own model (and what he holds) is never cut
     const float fade = cfg.tableFadeNear * cfg.tableUnitsPerMeter;
     p.fadeFar = fade > 0.0f ? fade : -1.0f;
     p.fadeNear = fade > 0.0f ? fade * 0.5f : -2.0f;

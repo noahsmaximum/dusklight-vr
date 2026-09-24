@@ -21,10 +21,11 @@
 
 // Opening the item wheel normally pauses the game: the menu window snapshots the frame (which sets
 // the pause flag) and shows the snapshot behind the wheel. In tabletop the wheel can instead run
-// "quick": no snapshot, so the world keeps going around Link, and only Link and the camera stop
-// hearing the controller (the wheel itself still reads it).
+// "quick": no snapshot, so the world keeps going around Link. The wheel is then steered with the
+// C-stick while Link keeps walking with the move stick (see PadView).
 DEFINE_HOOK_SYMBOL("dDlst_MENU_CAPTURE_c::draw", void(void*), MenuCaptureDraw);
 DEFINE_HOOK_SYMBOL("dMw_c::_draw", int(void*), MenuWindowDraw);
+DEFINE_HOOK_SYMBOL("dMw_c::_execute", int(void*), MenuWindowExecute);
 DEFINE_HOOK_SYMBOL("dMenu_Ring_c::_draw", void(dMenu_Ring_c*), RingDraw);
 DEFINE_HOOK_SYMBOL("src/d/actor/d_a_alink.cpp#daAlink_Execute", int(void*), LinkExecute);
 DEFINE_HOOK_SYMBOL("src/d/d_camera.cpp#camera_execute", int(void*), CameraExecute);
@@ -164,36 +165,84 @@ void ring_draw_post(ModContext*, void*, void*, void*) {
     }
 }
 
-// Controller state hidden from Link and the camera while a quick wheel is open (port 1 only; the
-// wheel is driven from it).
-interface_of_controller_pad g_saved{};
-int g_muted = 0;
+// What each part of the game gets to see of the controller while a quick wheel is open (port 1).
+// The wheel is steered with the C-stick, so Link keeps the move stick and can walk; the buttons go to
+// the wheel only (set item, direct select), and the camera doesn't turn with the C-stick.
+enum class PadView {
+    Link,   // move stick only
+    Camera, // nothing
+    Wheel,  // the C-stick in place of the move stick
+};
 
-HookAction mute_pre(ModContext*, void*, void*, void*) {
-    if (g_muted == 0 && quick_wheel()) {
-        auto& pad = mDoCPd_c::m_cpadInfo[PAD_1];
-        g_saved = pad;
-        pad.mMainStickPosX = pad.mMainStickPosY = pad.mMainStickValue = 0.0f;
-        pad.mMainStickAngle = 0;
-        pad.mCStickPosX = pad.mCStickPosY = pad.mCStickValue = 0.0f;
-        pad.mCStickAngle = 0;
-        pad.mAnalogA = pad.mAnalogB = pad.mTriggerLeft = pad.mTriggerRight = 0.0f;
-        pad.mButtonFlags = pad.mPressedButtonFlags = 0;
-        g_muted = 1;
-    } else if (g_muted != 0) {
-        ++g_muted; // nested (shouldn't happen): keep the outer save
+interface_of_controller_pad g_saved{};
+int g_padDepth = 0;
+bool g_padEdited = false;
+
+void clear_c_stick(interface_of_controller_pad& pad) {
+    pad.mCStickPosX = pad.mCStickPosY = pad.mCStickValue = 0.0f;
+    pad.mCStickAngle = 0;
+}
+
+void clear_main_stick(interface_of_controller_pad& pad) {
+    pad.mMainStickPosX = pad.mMainStickPosY = pad.mMainStickValue = 0.0f;
+    pad.mMainStickAngle = 0;
+}
+
+void clear_buttons(interface_of_controller_pad& pad) {
+    pad.mAnalogA = pad.mAnalogB = pad.mTriggerLeft = pad.mTriggerRight = 0.0f;
+    pad.mButtonFlags = pad.mPressedButtonFlags = 0;
+}
+
+void pad_view_begin(PadView view) {
+    if (g_padDepth++ > 0 || !quick_wheel()) {
+        return;
     }
+    auto& pad = mDoCPd_c::m_cpadInfo[PAD_1];
+    g_saved = pad;
+    g_padEdited = true;
+    switch (view) {
+    case PadView::Link:
+        clear_c_stick(pad);
+        clear_buttons(pad);
+        break;
+    case PadView::Camera:
+        clear_main_stick(pad);
+        clear_c_stick(pad);
+        clear_buttons(pad);
+        break;
+    case PadView::Wheel:
+        pad.mMainStickPosX = pad.mCStickPosX;
+        pad.mMainStickPosY = pad.mCStickPosY;
+        pad.mMainStickValue = pad.mCStickValue;
+        pad.mMainStickAngle = pad.mCStickAngle;
+        clear_c_stick(pad);
+        break;
+    }
+}
+
+void pad_view_end() {
+    if (g_padDepth > 0 && --g_padDepth == 0 && g_padEdited) {
+        mDoCPd_c::m_cpadInfo[PAD_1] = g_saved;
+        g_padEdited = false;
+    }
+}
+
+HookAction link_pad_pre(ModContext*, void*, void*, void*) {
+    pad_view_begin(PadView::Link);
     return HOOK_CONTINUE;
 }
 
-void mute_post(ModContext*, void*, void*, void*) {
-    if (g_muted == 1) {
-        mDoCPd_c::m_cpadInfo[PAD_1] = g_saved;
-    }
-    if (g_muted > 0) {
-        --g_muted;
-    }
+HookAction camera_pad_pre(ModContext*, void*, void*, void*) {
+    pad_view_begin(PadView::Camera);
+    return HOOK_CONTINUE;
 }
+
+HookAction wheel_pad_pre(ModContext*, void*, void*, void*) {
+    pad_view_begin(PadView::Wheel);
+    return HOOK_CONTINUE;
+}
+
+void pad_view_post(ModContext*, void*, void*, void*) { pad_view_end(); }
 
 } // namespace
 
@@ -220,10 +269,12 @@ void install() {
     ok &= mods::hook::add_post<MenuWindowDraw>(menu_draw_post) == MOD_OK;
     ok &= mods::hook::add_pre<RingDraw>(ring_draw_pre) == MOD_OK;
     ok &= mods::hook::add_post<RingDraw>(ring_draw_post) == MOD_OK;
-    ok &= mods::hook::add_pre<LinkExecute>(mute_pre) == MOD_OK;
-    ok &= mods::hook::add_post<LinkExecute>(mute_post) == MOD_OK;
-    ok &= mods::hook::add_pre<CameraExecute>(mute_pre) == MOD_OK;
-    ok &= mods::hook::add_post<CameraExecute>(mute_post) == MOD_OK;
+    ok &= mods::hook::add_pre<LinkExecute>(link_pad_pre) == MOD_OK;
+    ok &= mods::hook::add_post<LinkExecute>(pad_view_post) == MOD_OK;
+    ok &= mods::hook::add_pre<CameraExecute>(camera_pad_pre) == MOD_OK;
+    ok &= mods::hook::add_post<CameraExecute>(pad_view_post) == MOD_OK;
+    ok &= mods::hook::add_pre<MenuWindowExecute>(wheel_pad_pre) == MOD_OK;
+    ok &= mods::hook::add_post<MenuWindowExecute>(pad_view_post) == MOD_OK;
     if (!ok) {
         mods::log::warn("Quick item wheel unavailable (the wheel pauses the game as usual)");
     }
