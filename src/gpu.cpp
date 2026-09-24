@@ -56,18 +56,19 @@ struct ClearOut {
     @builtin(frag_depth) depth: f32,
 };
 
-// Clears the EFB colour and depth (reversed-Z puts the far plane at 0).
+// Clears the EFB colour and depth (reversed-Z puts the far plane at 0). Alpha 0, as the game
+// clears it: shadow volumes count in the EFB's alpha and must start from zero in every eye.
 @fragment fn fs_clear_black_rev(in: VsOut) -> ClearOut {
-    return ClearOut(vec4f(0.0, 0.0, 0.0, 1.0), 0.0);
+    return ClearOut(vec4f(0.0, 0.0, 0.0, 0.0), 0.0);
 }
 @fragment fn fs_clear_black_std(in: VsOut) -> ClearOut {
-    return ClearOut(vec4f(0.0, 0.0, 0.0, 1.0), 1.0);
+    return ClearOut(vec4f(0.0, 0.0, 0.0, 0.0), 1.0);
 }
 @fragment fn fs_clear_white_rev(in: VsOut) -> ClearOut {
-    return ClearOut(vec4f(1.0, 1.0, 1.0, 1.0), 0.0);
+    return ClearOut(vec4f(1.0, 1.0, 1.0, 0.0), 0.0);
 }
 @fragment fn fs_clear_white_std(in: VsOut) -> ClearOut {
-    return ClearOut(vec4f(1.0, 1.0, 1.0, 1.0), 1.0);
+    return ClearOut(vec4f(1.0, 1.0, 1.0, 0.0), 1.0);
 }
 )";
 

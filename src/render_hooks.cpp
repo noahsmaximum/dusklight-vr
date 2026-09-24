@@ -8,6 +8,7 @@
 #include "d/d_menu_window.h"
 #include "d/d_meter2_info.h"
 #include "f_op/f_op_camera_mng.h"
+#include "m_Do/m_Do_lib.h"
 #include "f_op/f_op_view.h"
 
 #include "render_hooks.hpp"
@@ -48,6 +49,9 @@
 DEFINE_HOOK_SYMBOL("aurora_begin_frame", bool(), AuroraBeginFrame);
 // Link's aiming reticle (a 2D sprite projected with the game camera); the aim line replaces it.
 DEFINE_HOOK_SYMBOL("daAlink_sight_c::draw", void(void*), SightDraw);
+// Frame interpolation swaps some matrices for their interpolated copies at draw time, keyed by the
+// matrix's address; the camera's view is one of them (shadows are drawn with it).
+DEFINE_HOOK_SYMBOL("dusk::interp::lookup_replacement", bool(const void*, f32 (*)[4]), InterpLookup);
 // Some transitions snapshot the framebuffer during the 2D phase and show it as a frozen frame.
 DEFINE_HOOK_SYMBOL("dDlst_snapShot_c::draw", void(void*), SnapshotDraw);
 // The boomerang's lock-on cursors (2D, placed for the game camera); drawn as 3D markers instead.
@@ -167,6 +171,7 @@ struct Frame {
     WGPUTextureView mono = nullptr;
     xr::QuadLayer quad;
     bool tabletop = false; // diorama camera + cut applied this frame
+    const void* camViewMtx = nullptr; // the game camera's view matrix (holds the eye's view while painting)
     bool hawk = false;     // Hawkeye: the game camera's zoomed view on a 3D screen (stereo/tabletop)
     xr::QuadLayer stereoScreen; // where the Hawkeye screen hangs
     std::array<gpu::CutParams, 2> cut{};
@@ -1227,6 +1232,7 @@ void painter_replace(ModContext*, void*, void* retval, void*) {
         }
     }
     f.hasCamera = cam != nullptr;
+    f.camViewMtx = cam != nullptr ? static_cast<const void*>(cam->view.viewMtx) : nullptr;
 
     ViewBackup backup{};
     Mtx34 trackingFromWorld;
@@ -1469,6 +1475,16 @@ void push_markers() {
     }
 }
 
+HookAction interp_lookup_pre(ModContext*, void* args, void* retval, void*) {
+    // While an eye paints, the camera's view matrix holds that eye's view: an interpolated
+    // replacement would be the flat game camera's (shadows then land out of sight).
+    if (f.eye >= 0 && f.camViewMtx != nullptr && mods::arg<const void*>(args, 0) == f.camViewMtx) {
+        *static_cast<bool*>(retval) = false;
+        return HOOK_SKIP_ORIGINAL;
+    }
+    return HOOK_CONTINUE;
+}
+
 HookAction snapshot_draw_pre(ModContext*, void*, void*, void*) {
     // The 2D phase is drawn over black (first eye) then white (second eye) to recover the HUD's
     // alpha; a snapshot taken in the second eye would freeze a white frame. Keep the first eye's.
@@ -1563,14 +1579,32 @@ HookAction trimming_pre(ModContext*, void*, void*, void*) {
     return f.active ? HOOK_SKIP_ORIGINAL : HOOK_CONTINUE;
 }
 
+f32 g_clipperGameFovy = 0.0f; // the game's fovy while setup runs widened (0: not widened)
+
 HookAction clipper_setup_pre(ModContext*, void* args, void*, void*) {
     // Culling happens at simulation time against the game camera. In VR the player looks around
     // that camera, so widen the frustum or objects pop in at the edges of the headset view.
+    g_clipperGameFovy = 0.0f;
     if (config().mode == Mode::Stereo && (f.active || xr::session_running())) {
         f32& fovy = mods::arg_ref<f32>(args, 0);
-        fovy = std::max(fovy, static_cast<f32>(config().cullFovDeg));
+        const f32 wide = static_cast<f32>(config().cullFovDeg);
+        if (fovy < wide) {
+            g_clipperGameFovy = fovy;
+            fovy = wide;
+        }
     }
     return HOOK_CONTINUE;
+}
+
+void clipper_setup_post(ModContext*, void*, void*, void*) {
+    // setup also stores cot(fovy), which scales the distance real-time shadows are drawn to. At the
+    // widened fovy it goes negative (cot of more than 90 degrees) and every shadow is culled, so put
+    // back the game camera's.
+    if (g_clipperGameFovy > 0.0f) {
+        const float rad = g_clipperGameFovy * kPi / 180.0f;
+        mDoLib_clipper::mFovyRate = std::cos(rad) / std::sin(rad);
+        g_clipperGameFovy = 0.0f;
+    }
 }
 
 HookAction clip_pre(ModContext*, void*, void* retval, void*) {
@@ -1860,6 +1894,7 @@ bool install() {
         check<MotionBlur>(mods::hook::add_pre<MotionBlur>(motion_blur_pre), "motionBlure", false);
         check<Trimming>(mods::hook::add_pre<Trimming>(trimming_pre), "trimming", false);
         check<ClipperSetup>(mods::hook::add_pre<ClipperSetup>(clipper_setup_pre), "mDoLib_clipper::setup", false);
+        check<ClipperSetup>(mods::hook::add_post<ClipperSetup>(clipper_setup_post), "mDoLib_clipper::setup", false);
         check<GetWindowSize>(mods::hook::add_post<GetWindowSize>(window_size_post), "get_window_size", false);
         check<SightDraw>(mods::hook::add_pre<SightDraw>(sight_draw_pre), "daAlink_sight_c::draw", false);
         check<BoomerangSightDraw>(mods::hook::add_pre<BoomerangSightDraw>(boomerang_sight_draw_pre),
@@ -1873,6 +1908,7 @@ bool install() {
         check<DrawXluActors>(mods::hook::add_pre<DrawXluActors>(bg_list_pre), "dComIfGd_drawXluList", false);
         check<DrawXluActors>(mods::hook::add_post<DrawXluActors>(bg_list_post), "dComIfGd_drawXluList", false);
         check<SnapshotDraw>(mods::hook::add_pre<SnapshotDraw>(snapshot_draw_pre), "dDlst_snapShot_c::draw", false);
+        check<InterpLookup>(mods::hook::add_pre<InterpLookup>(interp_lookup_pre), "dusk::interp::lookup_replacement", false);
         check<DrawOpaBG>(mods::hook::add_pre<DrawOpaBG>(bg_list_pre), "dComIfGd_drawOpaListBG", false);
         check<DrawOpaBG>(mods::hook::add_post<DrawOpaBG>(bg_list_post), "dComIfGd_drawOpaListBG", false);
         check<DrawOpaDarkBG>(mods::hook::add_pre<DrawOpaDarkBG>(bg_list_pre), "dComIfGd_drawOpaListDarkBG", false);

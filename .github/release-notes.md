@@ -21,6 +21,7 @@
 - **Stereo aiming** stays third person, over Link's shoulder
 - **Camera turns only when you turn it** (option, on): no more automatic swinging in stereo; Z-targeting, cutscenes and fixed-angle spots still move it
 - Scene transitions fade through **black** instead of white flashes
+- Stereo: real-time shadows are back (the widened culling frustum was culling them), and small objects' shadows no longer show through walls in the right eye
 - **VR settings window** with tabs (General, View, Tabletop, HUD & menus, Advanced), opened from **VR** in Dusklight's top bar
 
 ## Known issues
