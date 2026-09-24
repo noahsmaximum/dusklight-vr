@@ -1,12 +1,12 @@
 # Dusklight VR — handoff
 
 Repo: https://github.com/noahsmaximum/dusklight-vr (local: `C:\Users\Noah\Projects\dusklight-vr`)
-Latest release: **v0.3.1** (Windows + Quest 3; published by CI on tag push, the Quest APK is built by
+Latest release: **v1.0.0** (Windows + Quest 3; published by CI on tag push, the Quest APK is built by
 the manual "Android VR APK" workflow from the tag and attached with `gh release upload`).
 
 ## Status
 
-`main` and `vr-shared` are identical at v0.3.1; new work can continue on either.
+`main` is at v1.0.0 (the 1.0 work from `tabletop-xray` merged); start new work on a branch off `main`.
 
 Windows — user-tested in the headset (v0.3.0 re-checked through Virtual Desktop):
 
@@ -242,9 +242,11 @@ look, Quest performance (every tabletop draw now has a `discard`).
 
 ## Picking this up again
 
-1. State: v0.3.1 released (Windows + Quest 3); `main` == `vr-shared`. Work on a feature branch off
-   `main` (e.g. `tabletop-xray`), PR/merge back.
-2. 1.0 work on branch `tabletop-xray` (sections above): x-ray, table HUD, quick wheel, aim lines, Hawkeye, manual camera, black fades. Version bumped to 1.0.0; release after a headset pass (merge to main, tag v1.0.0, run the APK workflow).
+1. State: v1.0.0 released (Windows + Quest 3) from `main`: tabletop x-ray, table HUD, quick wheel,
+   aim lines and lock-on markers, Hawkeye screen, third-person aiming, manual camera, black fades,
+   stereo shadows (sections above). Work on a feature branch off `main`, PR/merge back.
+2. Quest: the 1.0 features are Windows-tested only; check them on the headset (x-ray cost with a
+   `discard` in every tabletop draw).
 3. Windows test: `tools/run_test.ps1` (desktop simulation; `-Headset` for Virtual Desktop). Quest:
    `docs/android.md` device loop; SDK/adb on `F:\Android\sdk`, ROM at
    `/storage/emulated/0/Download/tp-linkle.iso`, app `dev.twilitrealm.dusk.vr`.

@@ -1,6 +1,7 @@
-# Android (Quest 3, Pico 4) — bring-up in progress
+# Android (Quest 3, Pico 4)
 
-Branch: `vr-shared` (not merged). Windows is unaffected; everything here is additive.
+Released since v0.3.0 (current: v1.0.0) through the Dusklight VR edition APK. The 1.0 tabletop
+features (x-ray, aim lines, quick wheel, Hawkeye screen) are tested on Windows only so far.
 
 ## Where it stands (2026-09-23, tested on a Quest 3)
 
