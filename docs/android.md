@@ -57,9 +57,9 @@ Other known gaps:
 
 - Tabletop passthrough works since the manifest declares `com.oculus.feature.PASSTHROUGH`
   (`XR_FB_passthrough` + `ALPHA_BLEND` available); tabletop runs at ~22 fps (no culling, depth cut).
-- Disc selection: Dusklight's prelaunch screen draws to the invisible 2D surface, so the VR edition
-  (patch section 5) opens the system document picker when no readable disc is configured, before
-  SDL starts the game. Verify on a clean install (`pm clear` wipes the VR edition's saves/config).
+- Disc selection: Dusklight's launch menu draws to the invisible 2D surface, so the VR edition
+  (patch section 5) loads mods before the launch menu, and the VR mod shows it on its UI panel.
+  Verified on a clean install.
 - APKs are signed with a fixed key (repo secrets), so updates install over the previous build.
 - Pause/resume and headset removal are untested.
 

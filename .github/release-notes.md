@@ -9,11 +9,11 @@
 **Quest 3 (standalone, experimental)**
 1. Enable developer mode and sideload `dusklight-vr-edition-arm64.apk` (SideQuest or `adb install`). The VR mod is already inside. It installs beside the official Dusklight app as **Dusklight VR** and keeps its own saves.
 2. Copy your Twilight Princess (USA) disc image to the headset (e.g. its `Download` folder).
-3. Launch **Dusklight VR** from the library (Unknown Sources). The first time, a file picker opens: choose your disc image and the game boots into VR. It's remembered for later launches.
+3. Launch **Dusklight VR** from the library (Unknown Sources). Dusklight's launch menu shows in the headset: select your disc image there and start the game. It's remembered for later launches.
 
 ## What's new in 0.3.1
 
-- Quest: the first launch opens a file picker to choose your disc image. Before, a launch from the headset only showed loading dots, because Dusklight's disc screen can't be seen in VR
+- Quest: Dusklight's launch menu (disc selection, settings, mods) now shows in the headset from the first launch. Before, a first launch only showed loading dots
 - Quest: tabletop now shows your room around the diorama (passthrough is enabled in the app)
 
 ## What's new in 0.3.0

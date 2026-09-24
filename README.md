@@ -40,9 +40,9 @@ Mods window. Settings live in the mod's panel there (mode, preset, world scale, 
 recenter).
 
 **Quest 3**: install the APK, copy the disc image to the headset (e.g. its `Download` folder), and
-start **Dusklight VR** from the library (Unknown Sources). The first launch opens the system file
-picker as a panel: choose your disc image and the game boots into VR. The choice is remembered; if
-the file moves or becomes unreadable, the picker appears again.
+start **Dusklight VR** from the library (Unknown Sources). Dusklight's launch menu appears on a panel
+in the headset (navigate it with the controllers): choose your disc image there (it opens the system
+file picker), then start the game.
 
 Alternatively, over adb (no spaces in the file name):
 

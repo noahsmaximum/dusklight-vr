@@ -22,8 +22,8 @@ Windows — user-tested in the headset (v0.3.0 re-checked through Virtual Deskto
 
 Quest 3 (standalone, experimental) — **see `docs/android.md`, the live document**: stereo, cinema and
 the UI panel work on device; water confirmed by the user. Stereo 36 fps at 60% render scale (Android
-default), cinema mostly 72, tabletop ~22 with working passthrough. Untested: pause/resume and the
-first-launch disc picker (VR edition patch section 5). Next big item: SpaceWarp (`XR_FB_space_warp`) with camera-motion vectors
+default), cinema mostly 72, tabletop ~22 with working passthrough. Untested: pause/resume. The launch menu shows in the headset from
+the first launch (VR edition patch section 5 loads mods before it). Next big item: SpaceWarp (`XR_FB_space_warp`) with camera-motion vectors
 from per-eye depth, to display 72 while rendering 36.
 
 ## Architecture (all through mod services/hooks — no patched Dusklight/Aurora)
