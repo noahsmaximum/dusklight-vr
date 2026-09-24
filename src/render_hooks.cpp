@@ -151,6 +151,8 @@ struct Frame {
     WGPUTextureView mono = nullptr;
     xr::QuadLayer quad;
     bool tabletop = false; // diorama camera + cut applied this frame
+    bool hawk = false;     // Hawkeye: the game camera's zoomed view on a 3D screen (stereo/tabletop)
+    xr::QuadLayer stereoScreen; // where the Hawkeye screen hangs
     std::array<gpu::CutParams, 2> cut{};
     std::array<Mtx44f, 2> clipFromWorld{}; // each eye's, as the GPU sees it
     Mtx34 trackingFromWorld;  // tabletop: world (game units) -> tracking space (game units)
@@ -169,6 +171,7 @@ struct Packet {
     uint64_t xrId = 0;
     bool stereo = false;
     bool tabletop = false;   // eye images carry alpha
+    xr::QuadLayer stereoScreen; // enabled: eye images on a 3D screen (Hawkeye)
     bool seeThrough = false; // ...and the runtime should show the room behind them
     gpu::BlitMode eyeBlit = gpu::BlitMode::Opaque;
     uint32_t keyColor = 0;
@@ -447,6 +450,8 @@ Pose eye_pose(const xr::FrameInfo& info, int eye) {
 // tracking space (in game units): the game camera itself in stereo mode, the table placement in
 // tabletop mode. The eye pose (metres -> game units via `unitsPerMeter`) is applied on top, and the
 // projection becomes the headset's asymmetric frustum while keeping the game's depth mapping.
+void write_eye(view_class& v, const ViewBackup& base, const Mtx34& view, const Mtx44f& proj);
+
 void apply_eye(view_class& v, const ViewBackup& base, const Mtx34& trackingFromWorld, float unitsPerMeter, int eye) {
     const Pose pose = eye_pose(f.info, eye);
     const Mtx34 eyeFromTracking = inverse_rigid(pose_to_mtx(pose, unitsPerMeter));
@@ -463,7 +468,32 @@ void apply_eye(view_class& v, const ViewBackup& base, const Mtx34& trackingFromW
     proj.m[2][2] = base.projMtx[2][2];
     proj.m[2][3] = base.projMtx[2][3];
     proj.m[3][2] = -1.0f;
+    write_eye(v, base, view, proj);
+}
 
+void efb_size(uint32_t& w, uint32_t& h);
+
+// Hawkeye: the game camera itself (its zoom included), each eye half the stereo separation to the
+// side, for a 3D screen instead of the headset's view.
+void apply_screen_eye(view_class& v, const ViewBackup& base, int eye) {
+    const auto& cfg = config();
+    const float halfIpd = 0.032f * cfg.ipdScale * cfg.unitsPerMeter;
+    const Mtx34 view = mul(translation34(Vec3{eye == 0 ? halfIpd : -halfIpd, 0.0f, 0.0f}), load(base.viewMtx));
+
+    uint32_t w, h;
+    efb_size(w, h);
+    const float aspect = static_cast<float>(w) / static_cast<float>(h);
+    const float t = std::tan(base.fovy * 0.5f * kPi / 180.0f);
+    Mtx44f proj;
+    proj.m[0][0] = 1.0f / (t * aspect);
+    proj.m[1][1] = 1.0f / t;
+    proj.m[2][2] = base.projMtx[2][2];
+    proj.m[2][3] = base.projMtx[2][3];
+    proj.m[3][2] = -1.0f;
+    write_eye(v, base, view, proj);
+}
+
+void write_eye(view_class& v, const ViewBackup& base, const Mtx34& view, const Mtx44f& proj) {
     store(view, v.viewMtx);
     const Mtx34 inv = inverse_affine(view);
     store(inv, v.invViewMtx);
@@ -681,7 +711,7 @@ void end_xray() {
 }
 
 bool tabletop_culling_off() {
-    return config().mode == Mode::Tabletop && (xr::session_running() || config().simulateHmd);
+    return config().mode == Mode::Tabletop && !f.hawk && (xr::session_running() || config().simulateHmd);
 }
 
 // --- Quad placement ---------------------------------------------------------------------------------
@@ -874,7 +904,7 @@ void finish_compute(ModContext*, const GfxComputeContext* ctx, const void* paylo
     g_workerThread.store(GetCurrentThreadId(), std::memory_order_release);
 #endif
     if (p.xrId != 0) {
-        xr::arm_submit(p.xrId, p.stereo, p.seeThrough, p.quads, p.quadTokens);
+        xr::arm_submit(p.xrId, p.stereo, p.seeThrough, p.quads, p.quadTokens, p.stereoScreen);
     } else if (p.stereo) {
         g_simulationArmed.store(true, std::memory_order_release);
     }
@@ -1157,7 +1187,10 @@ void painter_replace(ModContext*, void*, void* retval, void*) {
     ViewBackup backup{};
     Mtx34 trackingFromWorld;
     float unitsPerMeter = config().unitsPerMeter;
-    f.tabletop = cam != nullptr && f.mode == Mode::Tabletop;
+    // Hawkeye (alone or on the bow): the zoomed game view on a 3D screen in front of you.
+    static const bool testHawk = std::getenv("DUSKLIGHT_VR_TEST_HAWK") != nullptr; // dev: force it on
+    f.hawk = cam != nullptr && (testHawk || dComIfGp_checkPlayerStatus0(0, 0x200000) != 0);
+    f.tabletop = cam != nullptr && f.mode == Mode::Tabletop && !f.hawk;
     if (cam != nullptr) {
         backup_view(cam->view, backup);
         const Mtx34 gameView = load(backup.viewMtx);
@@ -1178,7 +1211,9 @@ void painter_replace(ModContext*, void*, void* retval, void*) {
             // eye would otherwise depth-test against the first eye's scene.
             gpu::push_clear();
         }
-        if (cam != nullptr) {
+        if (cam != nullptr && f.hawk) {
+            apply_screen_eye(cam->view, backup, eye);
+        } else if (cam != nullptr) {
             apply_eye(cam->view, backup, trackingFromWorld, unitsPerMeter, eye);
             f.clipFromWorld[eye] = gpu_clip_from_world(cam->view);
             if (f.tabletop) {
@@ -1206,7 +1241,13 @@ void painter_replace(ModContext*, void*, void* retval, void*) {
         gpu::push_mirror({nullptr, nullptr, f.hud[0], f.hud[1]});
     }
 
-    f.quad = place_quad(dComIfGp_isPauseFlag() != 0, !f.hasCamera);
+    f.quad = place_quad(dComIfGp_isPauseFlag() != 0, !f.hasCamera || f.hawk);
+    f.stereoScreen = {};
+    if (f.hawk) {
+        // Same place and size as the HUD's screen placement, which then overlays it.
+        f.stereoScreen = place_quad(false, true);
+        f.stereoScreen.premultipliedAlpha = false;
+    }
     ++g_stereoFrames;
     if (retval) *static_cast<int*>(retval) = result;
 }
@@ -1517,7 +1558,8 @@ HookAction end_frame_pre(ModContext*, void*, void*, void*) {
     p.xrId = f.xrId;
     p.stereo = f.scene[0] != nullptr && f.scene[1] != nullptr && (f.xrId != 0 || simulating);
     p.tabletop = f.tabletop;
-    p.seeThrough = f.tabletop && config().tablePassthrough;
+    p.seeThrough = (f.tabletop || (f.hawk && f.mode == Mode::Tabletop)) && config().tablePassthrough;
+    p.stereoScreen = f.stereoScreen;
     if (f.tabletop) {
         // Runtimes without passthrough / alpha blending show the transparent area opaque: black, or a
         // chroma-key colour for passthrough tools that key it out.

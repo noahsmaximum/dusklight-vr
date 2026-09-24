@@ -85,8 +85,10 @@ void abandon_frame(uint64_t id);
 void begin_frame(uint64_t id);
 // quadToken identifies the quad resources the frame was rendered into (quad_token()).
 // seeThrough: the eye images carry premultiplied alpha to show the real world behind them.
+// stereoScreen.enabled: show the two eye images as a 3D screen at that pose (left image to the left
+// eye) instead of as the headset's own view (Hawkeye).
 void arm_submit(uint64_t id, bool stereo, bool seeThrough, const QuadLayer (&quads)[kQuadSlots],
-    void* const (&quadTokens)[kQuadSlots]);
+    void* const (&quadTokens)[kQuadSlots], const QuadLayer& stereoScreen = {});
 void on_queue_submitted();
 
 // Render targets (Dawn textures backed by capturable D3D12 resources) ------------------------------

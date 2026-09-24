@@ -63,6 +63,7 @@ struct Armed {
     bool seeThrough = false;
     std::array<QuadLayer, kQuadSlots> quad{};
     std::array<QuadResources*, kQuadSlots> quadRes{};
+    QuadLayer screen{}; // enabled: eye images on a 3D screen instead of the projection layer
 };
 
 constexpr size_t kRecordRing = 8;
@@ -867,9 +868,9 @@ void begin_frame(uint64_t id) {
 }
 
 void arm_submit(uint64_t id, bool stereo, bool seeThrough, const QuadLayer (&quads)[kQuadSlots],
-    void* const (&quadTokens)[kQuadSlots]) {
+    void* const (&quadTokens)[kQuadSlots], const QuadLayer& stereoScreen) {
     std::lock_guard lock{g.frameMutex};
-    g.armed = {id, stereo, seeThrough, {}, {}};
+    g.armed = {id, stereo, seeThrough, {}, {}, stereoScreen};
     for (int i = 0; i < kQuadSlots; ++i) {
         g.armed.quad[i] = quads[i];
         g.armed.quadRes[i] = quads[i].enabled ? static_cast<QuadResources*>(quadTokens[i]) : nullptr;
@@ -907,6 +908,7 @@ void on_queue_submitted() {
     std::array<XrCompositionLayerProjectionView, 2> projViews{};
     XrCompositionLayerProjection proj{XR_TYPE_COMPOSITION_LAYER_PROJECTION};
     std::array<XrCompositionLayerQuad, kQuadSlots> quadLayers{};
+    std::array<XrCompositionLayerQuad, 2> screenLayers{};
     XrCompositionLayerPassthroughFB ptLayer{XR_TYPE_COMPOSITION_LAYER_PASSTHROUGH_FB};
     std::vector<const XrCompositionLayerBaseHeader*> layers;
     XrEnvironmentBlendMode blendMode = XR_ENVIRONMENT_BLEND_MODE_OPAQUE;
@@ -922,7 +924,21 @@ void on_queue_submitted() {
         }
         proj.layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
     }
-    if (copied && stereo) {
+    if (copied && stereo && armed.screen.enabled) {
+        // A 3D screen: each eye's image on the same quad, visible to that eye only.
+        for (int eye = 0; eye < 2; ++eye) {
+            XrCompositionLayerQuad& layer = screenLayers[eye];
+            layer = {XR_TYPE_COMPOSITION_LAYER_QUAD};
+            layer.space = armed.screen.space == QuadSpace::View ? g.viewSpace : g.appSpace;
+            layer.eyeVisibility = eye == 0 ? XR_EYE_VISIBILITY_LEFT : XR_EYE_VISIBILITY_RIGHT;
+            layer.subImage.swapchain = g.eyeSwapchains[eye].handle;
+            layer.subImage.imageRect = {{0, 0},
+                {static_cast<int32_t>(g.eyeSwapchains[eye].width), static_cast<int32_t>(g.eyeSwapchains[eye].height)}};
+            layer.pose = to_xr(armed.screen.pose);
+            layer.size = {armed.screen.width, armed.screen.height};
+            layers.push_back(reinterpret_cast<const XrCompositionLayerBaseHeader*>(&layer));
+        }
+    } else if (copied && stereo) {
         for (int eye = 0; eye < 2; ++eye) {
             projViews[eye] = {XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW};
             projViews[eye].pose = r->views[eye].pose;
