@@ -47,7 +47,7 @@ constexpr std::string_view kFogBlend =
 
 // Eye data layout (8 x vec4f, see push_eye):
 //   q0..q3 worldFromClip   q4 eye.xyz, target width   q5 Link.xyz, target height
-//   q6 radius, taper, fadeNear, fadeFar                q7 margin
+//   q6 radius, taper, fadeNear, fadeFar                q7 margin, floor
 // Fog a/c hold the data's offset in 16-byte units: a = 1 + high bits, c = 2048 + low 10 bits.
 constexpr std::string_view kCutout = R"(// Dusklight VR: tabletop x-ray (replaces this fog type's colour blend)
     {
@@ -77,7 +77,9 @@ constexpr std::string_view kCutout = R"(// Dusklight VR: tabletop x-ray (replace
             let xrDir = xrToLink / max(xrLinkDist, 1e-4);
             let xrAlong = dot(xrToFrag, xrDir);
             let xrAhead = xrLinkDist - xrAlong;
-            if (xrAlong > 0.0 && xrAhead > q7.x) {
+            // Never below Link's feet: the ground he walks on stays (the cylinder's underside would
+            // otherwise clip the floor just in front of him).
+            if (xrAlong > 0.0 && xrAhead > q7.x && xrWorld.y > q7.y) {
                 let xrRadius = q6.x * clamp((xrAhead - q7.x) / max(q6.y, 1e-4), 0.0, 1.0);
                 if (xrRadius > 0.0) {
                     let xrPerp = length(xrToFrag - xrDir * xrAlong);
@@ -299,6 +301,7 @@ bool push_eye(const EyeParams& p, FogArgs& out) {
     data[26] = p.fadeNear;
     data[27] = p.fadeFar;
     data[28] = p.margin;
+    data[29] = p.floor;
     GfxRange range{};
     if (svc_gfx->push_storage(mod_ctx, data, sizeof(data), &range) != MOD_OK || (range.offset & 15u) != 0) {
         return false;

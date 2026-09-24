@@ -92,6 +92,10 @@ bool register_config() {
     ok &= reg_bool(g_vars.tableXray, "tableXray", true);
     ok &= reg_int(g_vars.tableXrayRadius, "tableXrayRadius", 200);
     ok &= reg_int(g_vars.tableFadeNearCm, "tableFadeNearCm", 20);
+    ok &= reg_bool(g_vars.tableHudFlat, "tableHudFlat", true);
+    ok &= reg_bool(g_vars.tableWheelAtLink, "tableWheelAtLink", true);
+    ok &= reg_int(g_vars.tableWheelWidthCm, "tableWheelWidthCm", 45);
+    ok &= reg_bool(g_vars.tableWheelPause, "tableWheelPause", false);
     ok &= reg_bool(g_vars.showDuskUi, "showDuskUi", true);
     ok &= reg_int(g_vars.hookLevel, "hookLevel", 4);
     ok &= reg_bool(g_vars.mirrorHud, "mirrorHud", true);
@@ -174,6 +178,10 @@ void refresh_config() {
     c.tableXray = get_bool(g_vars.tableXray, true);
     c.tableXrayRadius = static_cast<float>(std::clamp<int64_t>(get_int(g_vars.tableXrayRadius, 200), 50, 2000));
     c.tableFadeNear = static_cast<float>(std::clamp<int64_t>(get_int(g_vars.tableFadeNearCm, 20), 0, 200)) / 100.0f;
+    c.tableHudFlat = get_bool(g_vars.tableHudFlat, true);
+    c.tableWheelAtLink = get_bool(g_vars.tableWheelAtLink, true);
+    c.tableWheelWidth = static_cast<float>(std::clamp<int64_t>(get_int(g_vars.tableWheelWidthCm, 45), 10, 300)) / 100.0f;
+    c.tableWheelPause = get_bool(g_vars.tableWheelPause, false);
     c.showDuskUi = get_bool(g_vars.showDuskUi, true);
     c.hookLevel = static_cast<int>(std::clamp<int64_t>(get_int(g_vars.hookLevel, 4), 0, 4));
     c.mirrorHud = get_bool(g_vars.mirrorHud, true);

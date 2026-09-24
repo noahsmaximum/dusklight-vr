@@ -54,6 +54,7 @@ add_mod(dusklight_vr
         src/xr_runtime.cpp
         src/gpu.cpp
         src/xray.cpp
+        src/item_wheel.cpp
         ${VR_INTEROP_SOURCES}
         MOD_JSON "${CMAKE_CURRENT_BINARY_DIR}/mod.json"
         RES_DIR res

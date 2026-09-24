@@ -33,6 +33,10 @@ struct ConfigVars {
     ConfigVarHandle tableXray = 0;
     ConfigVarHandle tableXrayRadius = 0; // game units
     ConfigVarHandle tableFadeNearCm = 0;
+    ConfigVarHandle tableHudFlat = 0;
+    ConfigVarHandle tableWheelAtLink = 0;
+    ConfigVarHandle tableWheelWidthCm = 0;
+    ConfigVarHandle tableWheelPause = 0;
     ConfigVarHandle showDuskUi = 0;
     ConfigVarHandle hookLevel = 0;    // bring-up: how many layers of hooks to install
     ConfigVarHandle mirrorHud = 0;

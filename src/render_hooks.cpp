@@ -2,6 +2,8 @@
 #include "JSystem/J3DGraphAnimator/J3DModel.h"
 #include "JSystem/J3DGraphBase/J3DSys.h"
 #include "d/d_com_inf_game.h"
+#include "d/d_menu_window.h"
+#include "d/d_meter2_info.h"
 #include "f_op/f_op_camera_mng.h"
 #include "f_op/f_op_view.h"
 
@@ -14,6 +16,7 @@
 #include "vr_config.hpp"
 #include "vr_math.hpp"
 #include "xr_runtime.hpp"
+#include "item_wheel.hpp"
 #include "xray.hpp"
 
 #include "mods/svc/gfx.h"
@@ -145,6 +148,7 @@ struct Frame {
     xr::QuadLayer quad;
     bool tabletop = false; // diorama camera + cut applied this frame
     std::array<gpu::CutParams, 2> cut{};
+    Mtx34 trackingFromWorld;  // tabletop: world (game units) -> tracking space (game units)
     bool xrayReady = false; // this eye's x-ray data is uploaded (xrayFog points at it)
     bool xrayOn = false;    // the 3D phase of a tabletop eye draws with the x-ray fog
     xray::FogArgs xrayFog{};
@@ -599,6 +603,7 @@ void begin_xray(const view_class& v, const gpu::CutParams& cut) {
     p.radius = cfg.tableXray ? cfg.tableXrayRadius : 0.0f;
     p.taper = cfg.tableXrayRadius * 0.5f;
     p.margin = 30.0f;
+    p.floor = player->current.pos.y + 20.0f; // his feet, plus small steps and uneven ground
     const float fade = cfg.tableFadeNear * cfg.tableUnitsPerMeter;
     p.fadeFar = fade > 0.0f ? fade : -1.0f;
     p.fadeNear = fade > 0.0f ? fade * 0.5f : -2.0f;
@@ -642,6 +647,13 @@ void efb_size(uint32_t& w, uint32_t& h) {
     }
 }
 
+// Dusklight's item wheel (the ring menu) is open, opening or closing.
+bool item_wheel_open() {
+    const dMw_c* menu = dMeter2Info_getMenuWindowClass();
+    return menu != nullptr && (menu->mMenuProc == dMw_c::RING_OPEN || menu->mMenuProc == dMw_c::RING_MOVE ||
+                                  menu->mMenuProc == dMw_c::RING_CLOSE);
+}
+
 xr::QuadLayer place_quad(bool menuOpen, bool screen) {
     const auto& cfg = config();
     uint32_t w, h;
@@ -668,6 +680,37 @@ xr::QuadLayer place_quad(bool menuOpen, bool screen) {
         q.width = cfg.screenWidth;
         q.height = cfg.screenWidth * aspect;
         return q;
+    }
+
+    if (f.tabletop) {
+        const fopAc_ac_c* player = dComIfGp_getPlayer(0);
+        if (cfg.tableWheelAtLink && !cfg.tableWheelPause && player != nullptr && item_wheel_open()) {
+            // The item wheel is centred on the screen, so centre the panel on Link and turn it to
+            // face you: the wheel then rings him in the diorama. (Only for the quick wheel: a pausing
+            // wheel shows a snapshot of the screen behind it, and the diorama stops drawing.)
+            const float s = cfg.tableUnitsPerMeter;
+            const Vec3 link = transform_point(f.trackingFromWorld,
+                Vec3{player->current.pos.x, player->current.pos.y + 75.0f, player->current.pos.z}) * (1.0f / s);
+            const Vec3 toHead = head.position - link;
+            const float yaw = std::atan2(toHead.x, toHead.z);
+            const float pitch = std::atan2(toHead.y, std::sqrt(toHead.x * toHead.x + toHead.z * toHead.z));
+            q.space = xr::QuadSpace::App;
+            q.pose.position = link;
+            q.pose.orientation = quat_mul(quat_from_yaw(yaw), quat_about_x(-pitch));
+            q.width = cfg.tableWheelWidth;
+            q.height = cfg.tableWheelWidth * aspect;
+            return q;
+        }
+        if (cfg.tableHudFlat && !menuOpen) {
+            // Flat on the table, facing up, top edge away from you. The middle of the HUD is empty,
+            // so the diorama shows through; the corners (hearts, buttons, map, rupees) sit around it.
+            q.space = xr::QuadSpace::App;
+            q.pose.position = {cfg.tableOffsetX, cfg.tableHeight + 0.002f, -cfg.tableDistance};
+            q.pose.orientation = quat_about_x(-kPi * 0.5f);
+            q.width = cfg.tableRadius * 2.6f;
+            q.height = q.width * aspect;
+            return q;
+        }
     }
 
     if (menuOpen) {
@@ -1060,6 +1103,7 @@ void painter_replace(ModContext*, void*, void* retval, void*) {
         const Mtx34 gameView = load(backup.viewMtx);
         if (f.tabletop) {
             trackingFromWorld = table_transform(gameView, backup);
+            f.trackingFromWorld = trackingFromWorld;
             unitsPerMeter = config().tableUnitsPerMeter;
         } else {
             trackingFromWorld = config().levelHorizon ? level_view(gameView) : gameView;
@@ -1473,6 +1517,7 @@ bool install() {
         if (fog == MOD_OK) {
             xray::install(); // needs the fog hook to select its shaders
         }
+        item_wheel::install();
         check<LightPerspective>(
             mods::hook::add_post<LightPerspective>(light_perspective_post), "C_MTXLightPerspective", false);
     }

@@ -65,6 +65,11 @@ inline Quat quat_from_yaw(float yaw) {
     return {0.0f, std::sin(yaw * 0.5f), 0.0f, std::cos(yaw * 0.5f)};
 }
 
+inline Quat quat_about_x(float angle) {
+    // Rotation about +X by `angle` radians.
+    return {std::sin(angle * 0.5f), 0.0f, 0.0f, std::cos(angle * 0.5f)};
+}
+
 // Yaw (radians about +Y) of the forward (-Z) axis of a rotation.
 inline float yaw_of(const Quat& q) {
     float r[3][3];
@@ -139,6 +144,12 @@ inline Mtx34 inverse_affine(const Mtx34& a) {
         r.m[i][3] = -(r.m[i][0] * m[0][3] + r.m[i][1] * m[1][3] + r.m[i][2] * m[2][3]);
     }
     return r;
+}
+
+inline Vec3 transform_point(const Mtx34& a, Vec3 p) {
+    return {a.m[0][0] * p.x + a.m[0][1] * p.y + a.m[0][2] * p.z + a.m[0][3],
+        a.m[1][0] * p.x + a.m[1][1] * p.y + a.m[1][2] * p.z + a.m[1][3],
+        a.m[2][0] * p.x + a.m[2][1] * p.y + a.m[2][2] * p.z + a.m[2][3]};
 }
 
 inline Mtx34 mul(const Mtx34& a, const Mtx34& b) {

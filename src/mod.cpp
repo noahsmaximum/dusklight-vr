@@ -111,6 +111,10 @@ ModResult build_panel(ModContext*, UiElementHandle pane, void*, ModError*) {
     add_toggle(pane, "X-ray: keep Link visible", g_vars.tableXray);
     add_number(pane, "X-ray radius (game world)", g_vars.tableXrayRadius, 50, 2000, 25, " cm");
     add_number(pane, "Fade objects near your eyes", g_vars.tableFadeNearCm, 0, 200, 5, " cm");
+    add_toggle(pane, "HUD flat on the table", g_vars.tableHudFlat);
+    add_toggle(pane, "Item wheel around Link", g_vars.tableWheelAtLink);
+    add_number(pane, "Item wheel panel size", g_vars.tableWheelWidthCm, 10, 300, 5, " cm");
+    add_toggle(pane, "Item wheel pauses the game", g_vars.tableWheelPause);
     {
         UiControlDesc c = UI_CONTROL_DESC_INIT;
         c.kind = UI_CONTROL_COLOR;
