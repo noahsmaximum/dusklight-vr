@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Turns a Dusklight checkout into the "VR edition" the mod needs on Android.
 #
-# Additive changes (see the numbered sections below):
+# Changes, all small (see the numbered sections below):
 #   1. AndroidManifest.xml declares the app as an immersive OpenXR app, so Quest/Pico launch it in
 #      VR instead of as a flat panel, and so the OpenXR loader can find the runtime broker.
 #   2. Aurora requests Dawn's shared-texture/shared-fence features when the GPU offers them. That is
@@ -145,126 +145,46 @@ else
     echo "exports: patched"
 fi
 
-# --- 5. Choose the disc from the headset ---------------------------------------------------------
-# An immersive app never shows its 2D surface, and Dusklight's prelaunch screen (disc picker) draws
-# there, so a first launch from the headset only shows the runtime's loading dots (the VR mod loads
-# once a disc is set). When no disc is configured, open Android's document picker instead (the Quest
-# shows it as a panel) before the game starts, keep read access to the chosen file, and pass it as
-# --dvd: Dusklight validates it, saves it as the configured disc and boots into the game. Later
-# launches use the saved disc. Cancelling the picker closes the app.
+# --- 5. Load mods before the launch menu ---------------------------------------------------------
+# An immersive app never shows its 2D surface, where Dusklight draws its launch menu (disc selection,
+# settings, mods). The VR mod puts Dusklight's menus on a panel in the headset, but Dusklight only
+# loads mods after the launch menu, so a first launch from the headset showed nothing but the
+# runtime's loading dots. Load mods before the launch menu instead; the bundled mods only register
+# hooks, options and services at that point, none of which needs the disc.
 
-activity="$root/platforms/android/app/src/main/java/com/twilitrealm/dusk/DuskActivity.java"
-if grep -q "VR_DISC_REQUEST_CODE" "$activity"; then
-    echo "disc chooser: already patched"
+main_cpp="$root/src/m_Do/m_Do_main.cpp"
+if grep -q "Dusklight VR: mods load before the launch menu" "$main_cpp"; then
+    echo "early mods: already patched"
 else
-    python3 - "$activity" <<'PY'
+    python3 - "$main_cpp" <<'PY'
 import sys
 
 path = sys.argv[1]
 text = open(path, encoding="utf-8").read()
 
-old_return = "        return rawArgs == null ? arguments : splitArguments(rawArgs.trim());"
-assert old_return in text, "getArguments return not found"
-text = text.replace(
-    old_return,
-    "        if (rawArgs != null) {\n"
-    "            return splitArguments(rawArgs.trim());\n"
-    "        }\n"
-    "        // Dusklight VR: the prelaunch screen can't be seen in the headset; pick the disc here.\n"
-    "        if (hasConfiguredDisc()) {\n"
-    "            return arguments;\n"
-    "        }\n"
-    "        String disc = chooseDiscImage();\n"
-    "        if (disc == null) {\n"
-    "            runOnUiThread(this::finishAndRemoveTask);\n"
-    "            return arguments;\n"
-    "        }\n"
-    "        return new String[] {\"--dvd\", disc};",
-    1,
+init_block = (
+    '    if (parsed_arg_options.contains("mods") &&\n'
+    '            !parsed_arg_options["mods"].as<std::string>().empty())\n'
+    '    {\n'
+    '        mods_init(parsed_arg_options["mods"].as<std::string>());\n'
+    '    } else {\n'
+    '        mods_init(dusk::ConfigPath / "mods");\n'
+    '    }\n'
 )
+assert text.count(init_block) == 1, "mods_init call not found"
+text = text.replace(init_block, "    // Dusklight VR: mods load before the launch menu (see above).\n", 1)
 
-anchor = "    @Override\n    protected String[] getArguments() {"
-assert anchor in text, "getArguments not found"
+anchor = "    // Invalidate a bad saved isoPath so that Dusklight can't get blocked from starting up.\n"
+assert anchor in text, "launch-menu anchor not found"
 text = text.replace(
     anchor,
-    """    private static final int VR_DISC_REQUEST_CODE = 0x5652;
-    private final java.util.concurrent.CountDownLatch vrDiscChosen = new java.util.concurrent.CountDownLatch(1);
-    private volatile String vrDiscUri;
-
-    // The disc Dusklight has saved (backend.isoPath in config.json), if it can still be read.
-    private boolean hasConfiguredDisc() {
-        File config = new File(getFilesDir(), "config.json");
-        if (!config.isFile()) {
-            return false;
-        }
-        try {
-            String json = new String(java.nio.file.Files.readAllBytes(config.toPath()),
-                java.nio.charset.StandardCharsets.UTF_8);
-            String disc = new org.json.JSONObject(json).optString("backend.isoPath", "");
-            if (disc.isEmpty()) {
-                return false;
-            }
-            if (disc.startsWith("content://")) {
-                try (android.os.ParcelFileDescriptor fd =
-                         getContentResolver().openFileDescriptor(android.net.Uri.parse(disc), "r")) {
-                    return fd != null;
-                }
-            }
-            return new File(disc).canRead();
-        } catch (Exception e) {
-            Log.w(TAG, "Dusklight VR: configured disc unusable", e);
-            return false;
-        }
-    }
-
-    // Called on SDL's main thread (before the game starts): shows the system document picker and
-    // waits for the choice. Returns a content:// URI, or null when cancelled.
-    private String chooseDiscImage() {
-        runOnUiThread(() -> {
-            Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
-            intent.addCategory(Intent.CATEGORY_OPENABLE);
-            intent.setType("*/*");
-            intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
-            try {
-                startActivityForResult(intent, VR_DISC_REQUEST_CODE);
-            } catch (android.content.ActivityNotFoundException e) {
-                Log.w(TAG, "Dusklight VR: no document picker available", e);
-                vrDiscChosen.countDown();
-            }
-        });
-        try {
-            vrDiscChosen.await();
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-        }
-        return vrDiscUri;
-    }
-
-    @Override
-    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
-        if (requestCode != VR_DISC_REQUEST_CODE) {
-            super.onActivityResult(requestCode, resultCode, data);
-            return;
-        }
-        if (resultCode == RESULT_OK && data != null && data.getData() != null) {
-            android.net.Uri uri = data.getData();
-            try {
-                getContentResolver().takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION);
-            } catch (SecurityException e) {
-                Log.w(TAG, "Dusklight VR: could not keep access to " + uri, e);
-            }
-            Log.i(TAG, "Dusklight VR: disc chosen: " + uri);
-            vrDiscUri = uri.toString();
-        }
-        vrDiscChosen.countDown();
-    }
-
-""" + anchor,
+    "    // Dusklight VR: mods load before the launch menu, so the VR mod can show it in the headset.\n"
+    + init_block + "\n" + anchor,
     1,
 )
 open(path, "w", encoding="utf-8").write(text)
 PY
-    echo "disc chooser: patched"
+    echo "early mods: patched"
 fi
 
 echo "Dusklight VR edition patch applied."
