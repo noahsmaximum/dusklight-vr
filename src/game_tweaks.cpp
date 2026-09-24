@@ -1,3 +1,5 @@
+#include "JSystem/J3DGraphAnimator/J3DModel.h"
+#include "JSystem/J3DGraphBase/J3DSys.h"
 #include "JSystem/JUtility/JUTFader.h"
 #include "d/actor/d_a_alink.h"
 #include "d/d_camera.h"
@@ -16,6 +18,8 @@ DEFINE_HOOK_SYMBOL("JUTFader::draw", void(JUTFader*), FaderDraw);
 DEFINE_HOOK_SYMBOL("darwFilter", void(GXColor), ColorFilter);
 DEFINE_HOOK_SYMBOL("dCamera_c::freeCamera", bool(dCamera_c*), FreeCamera);
 DEFINE_HOOK_SYMBOL("daAlink_c::checkPlayerNoDraw", u32(daAlink_c*), PlayerNoDraw);
+DEFINE_HOOK_SYMBOL("src/f_op/f_op_actor.cpp#fopAc_Draw", int(void*), ActorDraw);
+DEFINE_HOOK_SYMBOL("J3DModel::entry", void(J3DModel*), ModelEntry);
 
 namespace vr::game_tweaks {
 namespace {
@@ -77,17 +81,68 @@ void player_no_draw_post(ModContext*, void* args, void* retval, void*) {
     }
 }
 
+// --- Characters out of the x-ray ----------------------------------------------------------------
+// The tabletop x-ray cuts what the map and actor draw lists hold, but characters should stay whole.
+// While Link, an NPC or an enemy draws, its models go into the "dark" actor lists instead: they are
+// drawn at the same point of the frame, and the x-ray leaves them alone (see render_hooks).
+
+bool g_drawingCharacter = false;
+J3DDrawBuffer* g_savedOpa = nullptr;
+J3DDrawBuffer* g_savedXlu = nullptr;
+
+HookAction actor_draw_pre(ModContext*, void* args, void*, void*) {
+    const auto* actor = static_cast<const fopAc_ac_c*>(mods::arg<void*>(args, 0));
+    g_drawingCharacter = actor != nullptr && config().mode == Mode::Tabletop && vr_running() &&
+                         (actor->group == fopAc_PLAYER_e || actor->group == fopAc_ENEMY_e ||
+                             actor->group == fopAc_NPC_e);
+    return HOOK_CONTINUE;
+}
+
+void actor_draw_post(ModContext*, void*, void*, void*) { g_drawingCharacter = false; }
+
+HookAction model_entry_pre(ModContext*, void*, void*, void*) {
+    g_savedOpa = g_savedXlu = nullptr;
+    if (!g_drawingCharacter) {
+        return HOOK_CONTINUE;
+    }
+    auto& lists = g_dComIfG_gameInfo.drawlist;
+    if (j3dSys.getDrawBuffer(J3DSysDrawBuf_Opa) == lists.mDrawBuffers[dDlst_list_c::DB_OPA_LIST]) {
+        g_savedOpa = j3dSys.getDrawBuffer(J3DSysDrawBuf_Opa);
+        j3dSys.setDrawBuffer(lists.mDrawBuffers[dDlst_list_c::DB_OPA_LIST_DARK], J3DSysDrawBuf_Opa);
+    }
+    if (j3dSys.getDrawBuffer(J3DSysDrawBuf_Xlu) == lists.mDrawBuffers[dDlst_list_c::DB_XLU_LIST]) {
+        g_savedXlu = j3dSys.getDrawBuffer(J3DSysDrawBuf_Xlu);
+        j3dSys.setDrawBuffer(lists.mDrawBuffers[dDlst_list_c::DB_XLU_LIST_DARK], J3DSysDrawBuf_Xlu);
+    }
+    return HOOK_CONTINUE;
+}
+
+void model_entry_post(ModContext*, void*, void*, void*) {
+    if (g_savedOpa != nullptr) {
+        j3dSys.setDrawBuffer(g_savedOpa, J3DSysDrawBuf_Opa);
+    }
+    if (g_savedXlu != nullptr) {
+        j3dSys.setDrawBuffer(g_savedXlu, J3DSysDrawBuf_Xlu);
+    }
+    g_savedOpa = g_savedXlu = nullptr;
+}
+
 } // namespace
 
 bool aiming_third_person() {
     const auto& cfg = config();
-    if (cfg.mode != Mode::Stereo || !vr_running() || !dComIfGp_checkPlayerStatus0(0, 0x2000) ||
-        dComIfGp_checkPlayerStatus0(0, 0x200000))
-    {
-        return false; // not stereo, not aiming (subject view), or the Hawkeye
+    if (cfg.mode != Mode::Stereo || !vr_running() || dComIfGp_checkPlayerStatus0(0, 0x200000)) {
+        return false; // not stereo, or the Hawkeye (its own 3D screen)
     }
-    const daAlink_c* link = daAlink_getAlinkActorClass();
+    daAlink_c* link = daAlink_getAlinkActorClass();
     if (link == nullptr) {
+        return false;
+    }
+    // Aiming: the item's sight is up, the subject view is on, or the camera went to Link's eyes (it
+    // then asks him not to draw).
+    if (!link->mSight.getDrawFlg() && !dComIfGp_checkPlayerStatus0(0, 0x2000) &&
+        !dComIfGp_checkCameraAttentionStatus(dComIfGp_getPlayerCameraID(0), 2))
+    {
         return false;
     }
     switch (link->mEquipItem) {
@@ -116,6 +171,13 @@ void install() {
     }
     if (mods::hook::add_post<PlayerNoDraw>(player_no_draw_post) != MOD_OK) {
         mods::log::warn("Third-person aiming unavailable");
+    }
+    if (mods::hook::add_pre<ActorDraw>(actor_draw_pre) != MOD_OK ||
+        mods::hook::add_post<ActorDraw>(actor_draw_post) != MOD_OK ||
+        mods::hook::add_pre<ModelEntry>(model_entry_pre) != MOD_OK ||
+        mods::hook::add_post<ModelEntry>(model_entry_post) != MOD_OK)
+    {
+        mods::log::warn("Tabletop x-ray will also cut characters (could not tell their models apart)");
     }
 }
 

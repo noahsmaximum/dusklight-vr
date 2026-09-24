@@ -48,6 +48,8 @@
 DEFINE_HOOK_SYMBOL("aurora_begin_frame", bool(), AuroraBeginFrame);
 // Link's aiming reticle (a 2D sprite projected with the game camera); the aim line replaces it.
 DEFINE_HOOK_SYMBOL("daAlink_sight_c::draw", void(void*), SightDraw);
+// Some transitions snapshot the framebuffer during the 2D phase and show it as a frozen frame.
+DEFINE_HOOK_SYMBOL("dDlst_snapShot_c::draw", void(void*), SnapshotDraw);
 // The boomerang's lock-on cursors (2D, placed for the game camera); drawn as 3D markers instead.
 DEFINE_HOOK_SYMBOL("daBoomerang_sight_c::draw", void(daBoomerang_sight_c*), BoomerangSightDraw);
 DEFINE_HOOK_SYMBOL("aurora_end_frame", void(), AuroraEndFrame);
@@ -82,9 +84,11 @@ DEFINE_HOOK_SYMBOL(VR_SYM_CLIP_SPHERE, int(const void*, const f32 (*)[4], Vec, f
 DEFINE_HOOK_SYMBOL(VR_SYM_CLIP_BOX, int(const void*, const f32 (*)[4], Vec*, Vec*),
     ClipBox);
 DEFINE_HOOK_SYMBOL("dComIfGd_drawOpaListSky", void(), DrawOpaSky);
-// The map's draw lists (terrain, buildings, and the scenery objects that sort themselves in with
-// it). The tabletop x-ray only cuts these: characters (NPCs, enemies, Link) are drawn in the actor
-// lists and stay whole.
+// The draw lists the tabletop x-ray cuts: the map's (terrain, buildings, scenery sorted in with it)
+// and the actors' (objects such as trees and the Ordon water wheel). Characters (NPCs, enemies,
+// Link) are moved to the "dark" actor lists while they draw (game_tweaks.cpp), which stay whole.
+DEFINE_HOOK_SYMBOL("dComIfGd_drawOpaList", void(), DrawOpaActors);
+DEFINE_HOOK_SYMBOL("dComIfGd_drawXluList", void(), DrawXluActors);
 DEFINE_HOOK_SYMBOL("dComIfGd_drawOpaListBG", void(), DrawOpaBG);
 DEFINE_HOOK_SYMBOL("dComIfGd_drawOpaListDarkBG", void(), DrawOpaDarkBG);
 DEFINE_HOOK_SYMBOL("dComIfGd_drawOpaListMiddle", void(), DrawOpaMiddle);
@@ -1465,6 +1469,12 @@ void push_markers() {
     }
 }
 
+HookAction snapshot_draw_pre(ModContext*, void*, void*, void*) {
+    // The 2D phase is drawn over black (first eye) then white (second eye) to recover the HUD's
+    // alpha; a snapshot taken in the second eye would freeze a white frame. Keep the first eye's.
+    return f.eye == 1 ? HOOK_SKIP_ORIGINAL : HOOK_CONTINUE;
+}
+
 HookAction boomerang_sight_draw_pre(ModContext*, void* args, void*, void*) {
     if (f.eye < 0) {
         return HOOK_CONTINUE;
@@ -1858,6 +1868,11 @@ bool install() {
         check<ClipBox>(mods::hook::add_pre<ClipBox>(clip_pre), "J3DUClipper::clip (box)", false);
         check<DrawOpaSky>(mods::hook::add_pre<DrawOpaSky>(sky_pre), "dComIfGd_drawOpaListSky", false);
         check<DrawXluSky>(mods::hook::add_pre<DrawXluSky>(sky_pre), "dComIfGd_drawXluListSky", false);
+        check<DrawOpaActors>(mods::hook::add_pre<DrawOpaActors>(bg_list_pre), "dComIfGd_drawOpaList", false);
+        check<DrawOpaActors>(mods::hook::add_post<DrawOpaActors>(bg_list_post), "dComIfGd_drawOpaList", false);
+        check<DrawXluActors>(mods::hook::add_pre<DrawXluActors>(bg_list_pre), "dComIfGd_drawXluList", false);
+        check<DrawXluActors>(mods::hook::add_post<DrawXluActors>(bg_list_post), "dComIfGd_drawXluList", false);
+        check<SnapshotDraw>(mods::hook::add_pre<SnapshotDraw>(snapshot_draw_pre), "dDlst_snapShot_c::draw", false);
         check<DrawOpaBG>(mods::hook::add_pre<DrawOpaBG>(bg_list_pre), "dComIfGd_drawOpaListBG", false);
         check<DrawOpaBG>(mods::hook::add_post<DrawOpaBG>(bg_list_post), "dComIfGd_drawOpaListBG", false);
         check<DrawOpaDarkBG>(mods::hook::add_pre<DrawOpaDarkBG>(bg_list_pre), "dComIfGd_drawOpaListDarkBG", false);
