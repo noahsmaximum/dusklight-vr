@@ -195,6 +195,32 @@ viewer and Link; near trees dither away). Android build compiles, untested on th
 log for "Tabletop x-ray unavailable"). Next: headset test, tune radius/taper/margin and the dither
 look, Quest performance (every tabletop draw now has a `discard`).
 
+## Tabletop HUD, quick item wheel, aim lines, Hawkeye (branch `tabletop-xray`, 2026-09-24)
+
+- X-ray strength: `link_coverage()` casts 15 camera line checks (5 heights x 3 across) from the eye
+  to Link, eased (~80 ms). Alpha-tested shaders (leaves) always use the full radius (collision rays
+  can't see them). Nothing within 50 units of Link's body is cut; nothing below his feet + 20.
+- Table HUD: flat on the table facing up (`tableHudFlat`, `tableHudWidthCm` 150).
+- Item wheel (`src/item_wheel.cpp`): quick mode (default in tabletop, `tableWheelPause` off) skips the
+  menu capture that pauses the game, raises the pause flag only around `dMw_c::_draw` (the wheel is
+  only queued while paused), and remaps the pad: the menu window sees the C-stick as its move stick,
+  Link keeps the move stick (no buttons / C-stick), the camera gets neither. The HUD panel moves to
+  Link (`tableWheelAtLink`, `tableWheelWidthCm` 100), offset so the ring centre (247, 217 of the
+  608x448 2D screen) is on him; `g_ringHIO` is swapped around `dMenu_Ring_c::_draw` (no backdrop,
+  item name lower, guides stacked under the button cluster).
+- Aim lines (`update_aim` / `push_aim_line`, `gpu::push_line`): while `mSight` draws, a dashed glowing
+  ribbon from the item to the aim point per eye (bow yellow, slingshot brown, clawshot red, dominion
+  rod teal, boomerang white); the reticle (`daAlink_sight_c::draw`) is skipped in the eye passes and
+  `game.aimingReticle` is forced on in memory so the bow reports its sight.
+- Hawkeye (player status0 0x200000): stereo/tabletop render the game camera (zoom included) per eye,
+  shown as a 3D screen: two quad layers on the eye swapchains with LEFT/RIGHT eye visibility at the
+  cinema screen pose (`xr::arm_submit(..., stereoScreen)`).
+- Settings: tabbed VR window (`open_window` in mod.cpp) from the top bar "VR" entry or the Mods panel.
+- Dev switches: `DUSKLIGHT_VR_TEST_WHEEL=<s>` opens the wheel, `DUSKLIGHT_VR_WHEEL_DUMP=<file>` dumps
+  its pane positions, `DUSKLIGHT_VR_TEST_AIM` draws a test aim line, `DUSKLIGHT_VR_TEST_HAWK` forces
+  the Hawkeye view, `DUSKLIGHT_VR_XRAY_DEBUG=1` paints the x-ray instead of cutting. The test
+  harness kills the game before its log is flushed: write measurements to a file instead.
+
 ## Cross-platform layout (since the Android work)
 
 - `src/interop.hpp` is the graphics-handoff interface; `interop_d3d12.cpp` (Windows) and
