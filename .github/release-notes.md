@@ -30,6 +30,3 @@
 - Quest: stereo runs at 36 fps (head rotation is reprojected at 72 Hz); motion-vector frame generation (SpaceWarp) is not in yet
 - Quest: pause/resume is untested; tabletop runs at about 22 fps
 - Virtual Desktop doesn't offer passthrough to apps; use a chroma-key background colour instead
-- Frosted-glass blur behind Dusklight menus is off while in VR
-- Pause-menu 3D item models look flat
-- Depth of field is off by default; motion blur is always off in VR
