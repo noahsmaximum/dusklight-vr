@@ -1,6 +1,7 @@
 ﻿// Game headers first: windows.h (pulled in below) defines macros such as IN that collide with game enums.
 #include "JSystem/J3DGraphAnimator/J3DModel.h"
 #include "JSystem/J3DGraphBase/J3DSys.h"
+#include "d/d_bg_s_lin_chk.h"
 #include "d/d_com_inf_game.h"
 #include "d/d_menu_window.h"
 #include "d/d_meter2_info.h"
@@ -574,6 +575,33 @@ gpu::CutParams cut_params(const view_class& v) {
 
 void efb_size(uint32_t& w, uint32_t& h);
 
+// How much of Link the level geometry hides from `eye` (0..1), from collision rays to points on his
+// body. The game's camera line check sees terrain, walls and roofs.
+float link_coverage(const fopAc_ac_c& player, Vec3 eye) {
+    const Vec3 feet{player.current.pos.x, player.current.pos.y, player.current.pos.z};
+    Vec3 side = cross(Vec3{0.0f, 1.0f, 0.0f}, feet - eye);
+    side = length(side) > 1e-3f ? normalize(side) * 35.0f : Vec3{35.0f, 0.0f, 0.0f};
+    const Vec3 points[] = {feet + Vec3{0.0f, 25.0f, 0.0f}, feet + Vec3{0.0f, 75.0f, 0.0f},
+        feet + Vec3{0.0f, 125.0f, 0.0f}, feet + Vec3{0.0f, 75.0f, 0.0f} + side,
+        feet + Vec3{0.0f, 75.0f, 0.0f} - side};
+    int blocked = 0;
+    for (const Vec3& p : points) {
+        const cXyz start{eye.x, eye.y, eye.z};
+        const cXyz end{p.x, p.y, p.z};
+        dBgS_CamLinChk lin;
+        lin.Set(&start, &end, nullptr);
+        blocked += dComIfG_Bgsp().LineCross(&lin) ? 1 : 0;
+    }
+    return static_cast<float>(blocked) / static_cast<float>(std::size(points));
+}
+
+// Smoothed coverage: the x-ray opens as Link gets hidden and closes when he is in the clear.
+struct XrayFade {
+    float amount = 0.0f;
+    int64_t lastTicks = 0;
+};
+XrayFade g_xrayFade;
+
 // Tabletop x-ray for the eye apply_eye just set up: uploads its data. The x-ray fog itself runs
 // from SCENE_BEGIN (start_xray; offscreen renders before it, such as the minimap, stay untouched)
 // to FRAME_BEFORE_HUD (end_xray); xray.cpp enforces it in between.
@@ -600,7 +628,17 @@ void begin_xray(const view_class& v, const gpu::CutParams& cut) {
     efb_size(w, h);
     p.targetWidth = static_cast<float>(w);
     p.targetHeight = static_cast<float>(h);
-    p.radius = cfg.tableXray ? cfg.tableXrayRadius : 0.0f;
+    if (f.eye == 0) {
+        // Once per frame, from the first eye (the eyes are a few centimetres apart).
+        const int64_t now = now_ticks();
+        const float dt = g_xrayFade.lastTicks != 0
+            ? std::clamp(static_cast<float>(ticks_to_ms(now - g_xrayFade.lastTicks)) / 1000.0f, 0.0f, 0.1f)
+            : 0.0f;
+        g_xrayFade.lastTicks = now;
+        const float target = cfg.tableXray ? link_coverage(*player, Vec3{p.eye[0], p.eye[1], p.eye[2]}) : 0.0f;
+        g_xrayFade.amount += (target - g_xrayFade.amount) * (1.0f - std::exp(-dt * 6.0f));
+    }
+    p.radius = cfg.tableXrayRadius * std::min(1.0f, g_xrayFade.amount * 1.5f);
     p.taper = cfg.tableXrayRadius * 0.5f;
     p.margin = 30.0f;
     p.floor = player->current.pos.y + 20.0f; // his feet, plus small steps and uneven ground
@@ -703,11 +741,11 @@ xr::QuadLayer place_quad(bool menuOpen, bool screen) {
         }
         if (cfg.tableHudFlat && !menuOpen) {
             // Flat on the table, facing up, top edge away from you. The middle of the HUD is empty,
-            // so the diorama shows through; the corners (hearts, buttons, map, rupees) sit around it.
+            // so the diorama shows through around the HUD's corners (hearts, buttons, map, rupees).
             q.space = xr::QuadSpace::App;
             q.pose.position = {cfg.tableOffsetX, cfg.tableHeight + 0.002f, -cfg.tableDistance};
             q.pose.orientation = quat_about_x(-kPi * 0.5f);
-            q.width = cfg.tableRadius * 2.6f;
+            q.width = cfg.tableHudWidth;
             q.height = q.width * aspect;
             return q;
         }

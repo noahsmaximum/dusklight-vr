@@ -34,6 +34,7 @@ struct ConfigVars {
     ConfigVarHandle tableXrayRadius = 0; // game units
     ConfigVarHandle tableFadeNearCm = 0;
     ConfigVarHandle tableHudFlat = 0;
+    ConfigVarHandle tableHudWidthCm = 0;
     ConfigVarHandle tableWheelAtLink = 0;
     ConfigVarHandle tableWheelWidthCm = 0;
     ConfigVarHandle tableWheelPause = 0;

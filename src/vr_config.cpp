@@ -93,6 +93,7 @@ bool register_config() {
     ok &= reg_int(g_vars.tableXrayRadius, "tableXrayRadius", 200);
     ok &= reg_int(g_vars.tableFadeNearCm, "tableFadeNearCm", 20);
     ok &= reg_bool(g_vars.tableHudFlat, "tableHudFlat", true);
+    ok &= reg_int(g_vars.tableHudWidthCm, "tableHudWidthCm", 20);
     ok &= reg_bool(g_vars.tableWheelAtLink, "tableWheelAtLink", true);
     ok &= reg_int(g_vars.tableWheelWidthCm, "tableWheelWidthCm", 45);
     ok &= reg_bool(g_vars.tableWheelPause, "tableWheelPause", false);
@@ -179,6 +180,7 @@ void refresh_config() {
     c.tableXrayRadius = static_cast<float>(std::clamp<int64_t>(get_int(g_vars.tableXrayRadius, 200), 50, 2000));
     c.tableFadeNear = static_cast<float>(std::clamp<int64_t>(get_int(g_vars.tableFadeNearCm, 20), 0, 200)) / 100.0f;
     c.tableHudFlat = get_bool(g_vars.tableHudFlat, true);
+    c.tableHudWidth = static_cast<float>(std::clamp<int64_t>(get_int(g_vars.tableHudWidthCm, 20), 5, 300)) / 100.0f;
     c.tableWheelAtLink = get_bool(g_vars.tableWheelAtLink, true);
     c.tableWheelWidth = static_cast<float>(std::clamp<int64_t>(get_int(g_vars.tableWheelWidthCm, 45), 10, 300)) / 100.0f;
     c.tableWheelPause = get_bool(g_vars.tableWheelPause, false);

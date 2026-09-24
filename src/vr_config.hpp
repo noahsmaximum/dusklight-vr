@@ -52,6 +52,7 @@ struct Config {
     float tableXrayRadius = 200.0f;     // x-ray radius around Link, game units (~cm of game world)
     float tableFadeNear = 0.2f;         // geometry closer to your eyes than this fades out (metres, 0 = off)
     bool tableHudFlat = true;           // HUD lies flat on the table around the diorama, facing up
+    float tableHudWidth = 0.2f;         // width of the HUD lying on the table (metres)
     bool tableWheelAtLink = true;       // the item wheel appears around Link in the diorama
     float tableWheelWidth = 0.45f;      // width of the HUD panel while the item wheel is open (metres)
     bool tableWheelPause = false;       // the item wheel pauses the game (off: quick switching, world keeps going)

@@ -1,3 +1,4 @@
+#include "d/d_com_inf_game.h"
 #include "d/d_menu_window.h"
 #include "d/d_meter2_info.h"
 #include "m_Do/m_Do_controller_pad.h"
@@ -17,6 +18,7 @@
 // "quick": no snapshot, so the world keeps going around Link, and only Link and the camera stop
 // hearing the controller (the wheel itself still reads it).
 DEFINE_HOOK_SYMBOL("dDlst_MENU_CAPTURE_c::draw", void(void*), MenuCaptureDraw);
+DEFINE_HOOK_SYMBOL("dMw_c::_draw", int(void*), MenuWindowDraw);
 DEFINE_HOOK_SYMBOL("src/d/actor/d_a_alink.cpp#daAlink_Execute", int(void*), LinkExecute);
 DEFINE_HOOK_SYMBOL("src/d/d_camera.cpp#camera_execute", int(void*), CameraExecute);
 
@@ -36,6 +38,25 @@ bool quick_wheel() {
 
 HookAction capture_pre(ModContext*, void*, void*, void*) {
     return quick_wheel() ? HOOK_SKIP_ORIGINAL : HOOK_CONTINUE;
+}
+
+// The menu window only queues the wheel for drawing while the game is paused, so a quick wheel
+// raises the pause flag for just that call.
+bool g_pauseRaised = false;
+
+HookAction menu_draw_pre(ModContext*, void*, void*, void*) {
+    g_pauseRaised = quick_wheel() && !dComIfGp_isPauseFlag();
+    if (g_pauseRaised) {
+        dComIfGp_onPauseFlag();
+    }
+    return HOOK_CONTINUE;
+}
+
+void menu_draw_post(ModContext*, void*, void*, void*) {
+    if (g_pauseRaised) {
+        dComIfGp_offPauseFlag();
+        g_pauseRaised = false;
+    }
 }
 
 // Controller state hidden from Link and the camera while a quick wheel is open (port 1 only; the
@@ -73,6 +94,8 @@ void mute_post(ModContext*, void*, void*, void*) {
 
 void install() {
     bool ok = mods::hook::add_pre<MenuCaptureDraw>(capture_pre) == MOD_OK;
+    ok &= mods::hook::add_pre<MenuWindowDraw>(menu_draw_pre) == MOD_OK;
+    ok &= mods::hook::add_post<MenuWindowDraw>(menu_draw_post) == MOD_OK;
     ok &= mods::hook::add_pre<LinkExecute>(mute_pre) == MOD_OK;
     ok &= mods::hook::add_post<LinkExecute>(mute_post) == MOD_OK;
     ok &= mods::hook::add_pre<CameraExecute>(mute_pre) == MOD_OK;
