@@ -47,7 +47,7 @@ constexpr std::string_view kFogBlend =
 
 // Eye data layout (8 x vec4f, see push_eye):
 //   q0..q3 worldFromClip   q4 eye.xyz, target width   q5 Link.xyz, target height
-//   q6 radius, taper, fadeNear, fadeFar                q7 margin, floor
+//   q6 radius, taper, fadeNear, fadeFar                q7 margin, floor, alpha-tested radius
 // Fog a/c hold the data's offset in 16-byte units: a = 1 + high bits, c = 2048 + low 10 bits.
 constexpr std::string_view kCutout = R"(// Dusklight VR: tabletop x-ray (replaces this fog type's colour blend)
     {
@@ -107,6 +107,13 @@ bool patch_source(std::string_view code, std::string& out) {
     }
     out.reserve(code.size() + kCutout.size());
     out.assign(code.substr(0, blend));
+    // Alpha-tested materials (leaves, grass, fences) have no collision, so the coverage rays can't
+    // see them hide Link: they always use the full radius.
+    std::string cutout(kCutout);
+    if (code.find("let alphaCompare =") != std::string_view::npos) {
+        const std::string_view from = "let xrRadius = q6.x *";
+        cutout.replace(cutout.find(from), from.size(), "let xrRadius = q7.z *");
+    }
     // DUSKLIGHT_VR_XRAY_DEBUG=1 paints instead of cutting: magenta = would be cut, yellow = the line
     // from the eye to Link.
     static const bool debug = [] {
@@ -114,7 +121,7 @@ bool patch_source(std::string_view code, std::string& out) {
         return v != nullptr && v[0] == '1';
     }();
     if (debug) {
-        std::string dbg(kCutout);
+        std::string dbg(cutout);
         const auto replace = [&](std::string_view a, std::string_view b) {
             const size_t at = dbg.find(a);
             if (at != std::string::npos) dbg.replace(at, a.size(), b);
@@ -133,7 +140,7 @@ bool patch_source(std::string_view code, std::string& out) {
             "                prev = vec4f(1.0, 1.0, 0.0, 1.0);\n            }");
         out.append(dbg);
     } else {
-        out.append(kCutout);
+        out.append(cutout);
     }
     out.append(code.substr(blend + kFogBlend.size()));
     return true;
@@ -302,6 +309,7 @@ bool push_eye(const EyeParams& p, FogArgs& out) {
     data[27] = p.fadeFar;
     data[28] = p.margin;
     data[29] = p.floor;
+    data[30] = p.radiusAlphaTested;
     GfxRange range{};
     if (svc_gfx->push_storage(mod_ctx, data, sizeof(data), &range) != MOD_OK || (range.offset & 15u) != 0) {
         return false;

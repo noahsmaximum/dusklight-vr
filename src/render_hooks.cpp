@@ -575,32 +575,29 @@ gpu::CutParams cut_params(const view_class& v) {
 
 void efb_size(uint32_t& w, uint32_t& h);
 
-// How much of Link the level geometry hides from `eye` (0..1), from collision rays to points on his
-// body. The game's camera line check sees terrain, walls and roofs.
+// How much of Link the level geometry hides from `eye` (0..1): collision rays to a 5 x 3 grid over
+// his body (feet to head, left to right). The game's camera line check sees terrain, walls and roofs.
 float link_coverage(const fopAc_ac_c& player, Vec3 eye) {
     const Vec3 feet{player.current.pos.x, player.current.pos.y, player.current.pos.z};
     Vec3 side = cross(Vec3{0.0f, 1.0f, 0.0f}, feet - eye);
-    side = length(side) > 1e-3f ? normalize(side) * 35.0f : Vec3{35.0f, 0.0f, 0.0f};
-    const Vec3 points[] = {feet + Vec3{0.0f, 25.0f, 0.0f}, feet + Vec3{0.0f, 75.0f, 0.0f},
-        feet + Vec3{0.0f, 125.0f, 0.0f}, feet + Vec3{0.0f, 75.0f, 0.0f} + side,
-        feet + Vec3{0.0f, 75.0f, 0.0f} - side};
+    side = length(side) > 1e-3f ? normalize(side) : Vec3{1.0f, 0.0f, 0.0f};
+    const cXyz start{eye.x, eye.y, eye.z};
     int blocked = 0;
-    for (const Vec3& p : points) {
-        const cXyz start{eye.x, eye.y, eye.z};
-        const cXyz end{p.x, p.y, p.z};
-        dBgS_CamLinChk lin;
-        lin.Set(&start, &end, nullptr);
-        blocked += dComIfG_Bgsp().LineCross(&lin) ? 1 : 0;
+    int total = 0;
+    for (const float up : {15.0f, 50.0f, 85.0f, 120.0f, 150.0f}) {
+        for (const float across : {-30.0f, 0.0f, 30.0f}) {
+            const Vec3 p = feet + Vec3{0.0f, up, 0.0f} + side * across;
+            const cXyz end{p.x, p.y, p.z};
+            dBgS_CamLinChk lin;
+            lin.Set(&start, &end, nullptr);
+            blocked += dComIfG_Bgsp().LineCross(&lin) ? 1 : 0;
+            ++total;
+        }
     }
-    return static_cast<float>(blocked) / static_cast<float>(std::size(points));
+    return static_cast<float>(blocked) / static_cast<float>(total);
 }
 
-// Smoothed coverage: the x-ray opens as Link gets hidden and closes when he is in the clear.
-struct XrayFade {
-    float amount = 0.0f;
-    int64_t lastTicks = 0;
-};
-XrayFade g_xrayFade;
+float g_xrayCoverage = 0.0f; // this frame's link_coverage (computed at the first eye)
 
 // Tabletop x-ray for the eye apply_eye just set up: uploads its data. The x-ray fog itself runs
 // from SCENE_BEGIN (start_xray; offscreen renders before it, such as the minimap, stay untouched)
@@ -630,15 +627,11 @@ void begin_xray(const view_class& v, const gpu::CutParams& cut) {
     p.targetHeight = static_cast<float>(h);
     if (f.eye == 0) {
         // Once per frame, from the first eye (the eyes are a few centimetres apart).
-        const int64_t now = now_ticks();
-        const float dt = g_xrayFade.lastTicks != 0
-            ? std::clamp(static_cast<float>(ticks_to_ms(now - g_xrayFade.lastTicks)) / 1000.0f, 0.0f, 0.1f)
-            : 0.0f;
-        g_xrayFade.lastTicks = now;
-        const float target = cfg.tableXray ? link_coverage(*player, Vec3{p.eye[0], p.eye[1], p.eye[2]}) : 0.0f;
-        g_xrayFade.amount += (target - g_xrayFade.amount) * (1.0f - std::exp(-dt * 6.0f));
+        g_xrayCoverage = cfg.tableXray ? link_coverage(*player, Vec3{p.eye[0], p.eye[1], p.eye[2]}) : 0.0f;
     }
-    p.radius = cfg.tableXrayRadius * std::min(1.0f, g_xrayFade.amount * 1.5f);
+    // The cylinder follows how much of Link is hidden, frame by frame.
+    p.radius = cfg.tableXrayRadius * std::min(1.0f, g_xrayCoverage * 1.25f);
+    p.radiusAlphaTested = cfg.tableXray ? cfg.tableXrayRadius : 0.0f;
     p.taper = cfg.tableXrayRadius * 0.5f;
     p.margin = 30.0f;
     p.floor = player->current.pos.y + 20.0f; // his feet, plus small steps and uneven ground
@@ -685,11 +678,10 @@ void efb_size(uint32_t& w, uint32_t& h) {
     }
 }
 
-// Dusklight's item wheel (the ring menu) is open, opening or closing.
+// Dusklight's item wheel (the ring menu) exists: opening, open or closing.
 bool item_wheel_open() {
     const dMw_c* menu = dMeter2Info_getMenuWindowClass();
-    return menu != nullptr && (menu->mMenuProc == dMw_c::RING_OPEN || menu->mMenuProc == dMw_c::RING_MOVE ||
-                                  menu->mMenuProc == dMw_c::RING_CLOSE);
+    return menu != nullptr && menu->mpMenuRing != nullptr;
 }
 
 xr::QuadLayer place_quad(bool menuOpen, bool screen) {
@@ -723,8 +715,7 @@ xr::QuadLayer place_quad(bool menuOpen, bool screen) {
     if (f.tabletop) {
         const fopAc_ac_c* player = dComIfGp_getPlayer(0);
         if (cfg.tableWheelAtLink && !cfg.tableWheelPause && player != nullptr && item_wheel_open()) {
-            // The item wheel is centred on the screen, so centre the panel on Link and turn it to
-            // face you: the wheel then rings him in the diorama. (Only for the quick wheel: a pausing
+            // Put the panel where the wheel rings Link and turn it to face you. (Only for the quick wheel: a pausing
             // wheel shows a snapshot of the screen behind it, and the diorama stops drawing.)
             const float s = cfg.tableUnitsPerMeter;
             const Vec3 link = transform_point(f.trackingFromWorld,
@@ -733,10 +724,13 @@ xr::QuadLayer place_quad(bool menuOpen, bool screen) {
             const float yaw = std::atan2(toHead.x, toHead.z);
             const float pitch = std::atan2(toHead.y, std::sqrt(toHead.x * toHead.x + toHead.z * toHead.z));
             q.space = xr::QuadSpace::App;
-            q.pose.position = link;
             q.pose.orientation = quat_mul(quat_from_yaw(yaw), quat_about_x(-pitch));
             q.width = cfg.tableWheelWidth;
             q.height = cfg.tableWheelWidth * aspect;
+            // The wheel's centre sits left of the screen centre (at 247, 217 of the 608x448 2D
+            // screen), so shift the panel until that point is on Link.
+            const Vec3 ringOffset{(247.0f / 608.0f - 0.5f) * q.width, (0.5f - 217.0f / 448.0f) * q.height, 0.0f};
+            q.pose.position = link - rotate(q.pose.orientation, ringOffset);
             return q;
         }
         if (cfg.tableHudFlat && !menuOpen) {
@@ -1088,6 +1082,7 @@ void end_hud_capture() {
 }
 
 void painter_replace(ModContext*, void*, void* retval, void*) {
+    item_wheel::debug_tick();
     // Recorded by this frame's actor draws; the next frame's draws record them again (and models
     // can be deleted by the simulation in between).
     struct ClearBgModels {

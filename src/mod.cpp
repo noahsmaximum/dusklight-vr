@@ -172,8 +172,8 @@ ModResult build_tabletop_tab(ModContext*, UiWindowHandle, UiElementHandle left, 
 
     svc_ui->pane_add_section(mod_ctx, left, "X-ray");
     add_toggle(left, "Keep Link visible", g_vars.tableXray,
-        "When the level hides Link, a cylinder of clear view opens from your eyes to him. It opens "
-        "gradually, the more of him is hidden.");
+        "When the level hides Link, a cylinder of clear view opens from your eyes to him. It widens "
+        "the more of him is hidden; leaves and other see-through scenery always clear.");
     add_number(left, "X-ray radius (game world)", g_vars.tableXrayRadius, 50, 2000, 25, " cm");
     add_number(left, "Fade objects near your eyes", g_vars.tableFadeNearCm, 0, 200, 5, " cm",
         "Scenery closer to your eyes than this fades out (0 turns it off).");
