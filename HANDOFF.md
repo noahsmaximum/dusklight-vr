@@ -1,12 +1,12 @@
 # Dusklight VR — handoff
 
 Repo: https://github.com/noahsmaximum/dusklight-vr (local: `C:\Users\Noah\Projects\dusklight-vr`)
-Latest release: **v0.3.0** (Windows + Quest 3; published by CI on tag push, the Quest APK is built by
+Latest release: **v0.3.1** (Windows + Quest 3; published by CI on tag push, the Quest APK is built by
 the manual "Android VR APK" workflow from the tag and attached with `gh release upload`).
 
 ## Status
 
-`main` and `vr-shared` are identical at v0.3.0; new work can continue on either.
+`main` and `vr-shared` are identical at v0.3.1; new work can continue on either.
 
 Windows — user-tested in the headset (v0.3.0 re-checked through Virtual Desktop):
 
@@ -161,6 +161,25 @@ How it works (see README "How it works" for the one-line version):
 **Ideas not done yet:** roof/ceiling cut in interiors (a height cap), a table rim or base, grab-to-move
 the table with controllers, a sphere-based clip test instead of culling nothing.
 
+## Next feature: tabletop x-ray (not started, 2026-09-24)
+
+User's spec: in **tabletop mode**, Link stays visible at all times. A circle around him has 100%
+clear vision (whatever is between the viewer and Link is removed/see-through there), and objects
+near the camera (the viewer's head) are faded.
+
+Existing pieces to build on (nothing decided yet):
+- Link's position: `dComIfGp_getPlayer(0)->current.pos` (already used by `table_transform`).
+- Per-eye depth snapshot + full-screen pass at `FRAME_BEFORE_HUD`: `gpu::push_cut` / `CutParams`
+  (`worldFromClip`, table anchor/radius, floor) already turns depth into premultiplied alpha for the
+  table cut. An x-ray circle (Link projected per eye, screen radius) and a near-camera fade could be
+  more terms in that same shader.
+- Catch: a single-layer framebuffer has already overwritten whatever an occluder hides, so fading
+  alpha alone reveals the passthrough/background, not Link. Showing Link *through* occluders needs
+  either skipping the occluders (e.g. the `J3DUClipper::clip` hooks already installed for tabletop
+  could cull objects intersecting the eye→Link cone) or drawing Link again on top.
+- Test harness: `tools/run_test.ps1` (simulateHmd, side-by-side) with `-Cvars ...mode=3` for
+  tabletop; Quest: `tools/quest_bench.sh` / docs/android.md device loop.
+
 ## Cross-platform layout (since the Android work)
 
 - `src/interop.hpp` is the graphics-handoff interface; `interop_d3d12.cpp` (Windows) and
@@ -174,9 +193,13 @@ the table with controllers, a sphere-based clip test instead of culling nothing.
 
 ## Picking this up again
 
-1. Read `docs/android.md` (device loop, what is fixed vs still untested, known gaps).
-2. The Quest and the SDK are on this machine: `F:\Android\sdk` (adb in `platform-tools`), ROM already
-   at `/storage/emulated/0/Download/tp-linkle.iso`, app installed as `dev.twilitrealm.dusk.vr`.
-3. Try the untested fixes on the headset (read the PROBE log once, then delete it), measure, then
-   strip the temporary bring-up code listed in `docs/android.md`.
-4. Before merging `vr-shared`: test it on the Windows headset (it carries the session-id fix).
+1. State: v0.3.1 released (Windows + Quest 3); `main` == `vr-shared`. Work on a feature branch off
+   `main` (e.g. `tabletop-xray`), PR/merge back.
+2. Next feature: tabletop x-ray (section above).
+3. Windows test: `tools/run_test.ps1` (desktop simulation; `-Headset` for Virtual Desktop). Quest:
+   `docs/android.md` device loop; SDK/adb on `F:\Android\sdk`, ROM at
+   `/storage/emulated/0/Download/tp-linkle.iso`, app `dev.twilitrealm.dusk.vr`.
+4. Still unconfirmed: the Ordon Village river in the Windows headset; Quest pause/resume.
+5. v0.3.1 was tagged 2026-09-24. If its release page lacks `dusklight-vr-edition-arm64.apk`, download
+   the "Android VR APK" run for tag v0.3.1 (`gh run list --workflow android-apk.yml`) and attach it:
+   `gh run download <id> -D dist-android && gh release upload v0.3.1 dist-android/*/*.apk`.
