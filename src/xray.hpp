@@ -29,7 +29,7 @@ struct EyeParams {
     float targetWidth;       // render target size in pixels; other targets (shadow maps) are left alone
     float targetHeight;
     float radius;            // x-ray radius around Link (scaled by how much of him is hidden)
-    float radiusAlphaTested; // the same for alpha-tested materials (foliage), which the rays can't see
+    float radiusAlphaTested; // full radius: alpha-tested materials (foliage) and anything above Link's head
     float taper;             // the cylinder closes over this distance in front of Link
     float margin;            // nothing closer than this in front of Link is cut
     float floor;             // nothing below this height is cut (the ground under Link)

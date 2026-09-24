@@ -83,7 +83,11 @@ constexpr std::string_view kCutout = R"(// Dusklight VR: tabletop x-ray (replace
             let xrBodyY = clamp(xrWorld.y, q7.y - 20.0, q5.y + 75.0);
             let xrToBody = vec3f(xrWorld.x - q5.x, xrWorld.y - xrBodyY, xrWorld.z - q5.z);
             if (xrAlong > 0.0 && xrAhead > q7.x && xrWorld.y > q7.y && length(xrToBody) > q7.w) {
-                let xrRadius = q6.x * clamp((xrAhead - q7.x) / max(q6.y, 1e-4), 0.0, 1.0);
+                // Above Link's head (roofs, canopies, upper floors, often without collision the
+                // coverage rays could hit): always the full radius. Lower down: as much as the rays
+                // found him hidden.
+                let xrBase = select(q6.x, q7.z, xrWorld.y > q5.y + 85.0);
+                let xrRadius = xrBase * clamp((xrAhead - q7.x) / max(q6.y, 1e-4), 0.0, 1.0);
                 if (xrRadius > 0.0) {
                     let xrPerp = length(xrToFrag - xrDir * xrAlong);
                     xrKeep = min(xrKeep, smoothstep(xrRadius * 0.8, xrRadius, xrPerp));
@@ -114,8 +118,8 @@ bool patch_source(std::string_view code, std::string& out) {
     // see them hide Link: they always use the full radius.
     std::string cutout(kCutout);
     if (code.find("let alphaCompare =") != std::string_view::npos) {
-        const std::string_view from = "let xrRadius = q6.x *";
-        cutout.replace(cutout.find(from), from.size(), "let xrRadius = q7.z *");
+        const std::string_view from = "let xrBase = select(q6.x, q7.z, xrWorld.y > q5.y + 85.0);";
+        cutout.replace(cutout.find(from), from.size(), "let xrBase = q7.z;");
     }
     // DUSKLIGHT_VR_XRAY_DEBUG=1 paints instead of cutting: magenta = would be cut, yellow = the line
     // from the eye to Link.
