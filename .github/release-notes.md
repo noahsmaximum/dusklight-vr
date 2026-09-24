@@ -11,20 +11,21 @@
 2. Copy your Twilight Princess (USA) disc image to the headset (e.g. its `Download` folder).
 3. Launch **Dusklight VR** from the library (Unknown Sources). Dusklight's launch menu shows in the headset: select your disc image there and start the game. It's remembered for later launches.
 
-## What's new in 0.3.1
+## What's new in 1.0
 
-- Quest: Dusklight's launch menu (disc selection, settings, mods) now shows in the headset from the first launch. Before, a first launch only showed loading dots
-- Quest: tabletop now shows your room around the diorama (passthrough is enabled in the app)
-
-## What's new in 0.3.0
-
-- **Quest 3 standalone support** (experimental) through the Dusklight VR edition APK: stereo, cinema, tabletop and Dusklight's own menus in the headset
-- **Water**: the last "portal" water (the river in Ordon Village) is fixed
-- Quest performance: stereo holds 36 fps at 60% render scale (the Quest default), cinema mostly 72 fps
-- Windows: a few shared-code fixes from the Android work; behaviour otherwise unchanged
+- **Tabletop x-ray**: when the level hides Link, a cylinder of clear view opens from your eyes to him (roofs, walls, trees). The ground he stands on, Link himself, NPCs and enemies are never cut; scenery right in front of your eyes fades out
+- **Tabletop HUD** lies flat on the table around the diorama
+- **Quick item wheel** in tabletop: opens around Link without pausing; steer it with the right stick while Link keeps walking. The pausing wheel is still an option
+- **Aim lines**: a dashed, glowing line in the item's colour from the item to where the shot lands (bow, slingshot, clawshot, dominion rod, boomerang), replacing the flat crosshair. Lock-on arrows are drawn around targets in 3D
+- **Hawkeye** shows its zoomed view on a 3D screen in stereo and tabletop
+- **Stereo aiming** stays third person, over Link's shoulder
+- **Camera turns only when you turn it** (option, on): no more automatic swinging in stereo; Z-targeting, cutscenes and fixed-angle spots still move it
+- Scene transitions fade through **black** instead of white flashes
+- **VR settings window** with tabs (General, View, Tabletop, HUD & menus, Advanced), opened from **VR** in Dusklight's top bar
 
 ## Known issues
 
+- Quest: the new tabletop features (x-ray, aim lines, quick wheel, Hawkeye screen) are tested on Windows only so far
 - Quest: stereo runs at 36 fps (head rotation is reprojected at 72 Hz); motion-vector frame generation (SpaceWarp) is not in yet
 - Quest: pause/resume is untested; tabletop runs at about 22 fps
 - Virtual Desktop doesn't offer passthrough to apps; use a chroma-key background colour instead

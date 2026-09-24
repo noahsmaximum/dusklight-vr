@@ -18,6 +18,14 @@ a VR app manifest and a few exports the mod needs; it installs beside the offici
 - **Dusklight's own menus** (settings, mod manager) appear on a panel in the headset.
 - **Tabletop mode**: the world as a small diorama on your real table (scale 1:50 by default), with
   the sky see-through so your room shows around it (passthrough, where the runtime supports it).
+- **Tabletop x-ray**: when the level hides Link, a cylinder of clear view opens from your eyes to him;
+  NPCs, enemies, Link and the ground under him are never cut. The HUD lies flat on the table, and the
+  item wheel opens around Link without pausing (right stick to choose, Link keeps walking).
+- **Aim lines** in each item's colour from the item to where the shot lands, and lock-on arrows in 3D,
+  instead of the flat crosshair. The **Hawkeye** shows its zoom on a 3D screen.
+- **Comfort**: aiming in stereo stays third person, the camera turns only when you turn it (option),
+  and transitions fade through black.
+- **VR settings window** with tabs, opened from **VR** in Dusklight's top bar.
 - Frames are paced by the headset (`xrWaitFrame`) and rendered through Dusklight's frame interpolation,
   so every headset refresh gets a fresh frame instead of the game's 30 Hz simulation rate.
 
@@ -36,8 +44,8 @@ a VR app manifest and a few exports the mod needs; it installs beside the offici
 ## Install
 
 **Windows**: copy `dusklight_vr.dusk` into `%APPDATA%\TwilitRealm\Dusklight\mods` and enable it in the
-Mods window. Settings live in the mod's panel there (mode, preset, world scale, HUD/menu placement,
-recenter).
+Mods window. Settings open from **VR** in Dusklight's top bar (or the mod's panel in the Mods window):
+mode, presets, world scale, tabletop, HUD/menu placement, recenter.
 
 **Quest 3**: install the APK, copy the disc image to the headset (e.g. its `Download` folder), and
 start **Dusklight VR** from the library (Unknown Sources). Dusklight's launch menu appears on a panel
@@ -73,6 +81,7 @@ The headset reprojects missed frames for head rotation. Frame generation from mo
 | Stereo | `mDoGph_Painter` is replace-hooked and run once per eye with the camera's `view_class` rewritten (eye pose × game view, headset off-axis frustum). Dusklight's J3D computes view×model at paint time, so the draw lists recorded by the simulation re-render correctly for each eye. Depth is cleared between eyes; UI timers are frozen for the second eye. |
 | Culling | `mDoLib_clipper::setup` is widened so turning your head never reveals culled geometry. |
 | HUD layer | At `GFX_STAGE_FRAME_BEFORE_HUD` the scene is snapshotted and the main framebuffer cleared to black (eye 1) / white (eye 2); the 2D phase draws over it, the result is snapshotted at `FRAME_AFTER_HUD` and the scene put back. The compositor recovers exact premultiplied alpha from the pair. |
+| X-ray | Aurora's GX shaders are patched as Dawn creates them: an otherwise unused fog type selects a cut-out (cylinder from the eye to Link, near-head fade, dithered `discard`). The mod's `GXSetFog` markers and hooks on Aurora's fog register decoders give every draw of the map's lists that fog type; each eye's data sits in Aurora's storage buffer. Collision rays measure how much of Link is hidden. |
 | Tabletop | The eye views are built from a table placement (player at the table centre, game-camera heading pointing away from you, scale 1:N) instead of the game camera. Frustum culling (`J3DUClipper::clip`), the sky lists and fog are switched off. At `FRAME_BEFORE_HUD` each eye's depth is snapshotted and a pass rebuilds world positions from it, fading out everything beyond the table radius / below the table into premultiplied alpha. The runtime shows the room behind it via `XR_FB_passthrough`, or the `ALPHA_BLEND` environment blend mode. |
 | GPU handoff (Windows) | Eye/HUD images are composited on Aurora's render worker (GfxService compute callback) into Dawn textures whose `ID3D12Resource` is captured when they are created. Right after the frame's submit (`aurora::gfx::after_submit`), they are copied into the OpenXR swapchains on Dawn's own D3D12 queue and `xrEndFrame` is called. Dawn's device/queue come from `webgpu_dawn.dll` exports. |
 | GPU handoff (Android) | Targets are AHardwareBuffers imported into Dawn as shared texture memory and into the OpenXR Vulkan device as images. Dawn's end-of-access sync fds become Vulkan wait semaphores; the copy signals a semaphore whose sync fd Dawn waits on next frame (no CPU stall). See `docs/android.md`. |

@@ -197,6 +197,14 @@ look, Quest performance (every tabletop draw now has a `discard`).
 
 ## Tabletop HUD, quick item wheel, aim lines, Hawkeye (branch `tabletop-xray`, 2026-09-24)
 
+- X-ray gating: the x-ray fog is on only inside the map's draw lists (`dComIfGd_drawOpaListBG`,
+  `DarkBG`, `Middle`, `drawXluListBG`, `XluListDarkBG`, pre/post hooks): actors (NPCs, enemies,
+  Link) are never cut. Above Link's head (+10) the full radius applies (roofs without collision).
+- `src/game_tweaks.cpp`: black fades in VR (`JUTFader::draw`, `darwFilter`), manual camera
+  (`manualCamera`: `game.freeCamera` forced on, `dCamera_c::freeCamera` enters manual mode at once),
+  third-person aiming in stereo (`checkPlayerNoDraw` cleared while aiming from the subject view;
+  render_hooks pulls the stereo view back 230 / up 40 / right 45, eased).
+
 - X-ray strength: `link_coverage()` casts 15 camera line checks (5 heights x 3 across) from the eye
   to Link, eased (~80 ms). Alpha-tested shaders (leaves) always use the full radius (collision rays
   can't see them). Nothing within 50 units of Link's body is cut; nothing below his feet + 20.
@@ -236,7 +244,7 @@ look, Quest performance (every tabletop draw now has a `discard`).
 
 1. State: v0.3.1 released (Windows + Quest 3); `main` == `vr-shared`. Work on a feature branch off
    `main` (e.g. `tabletop-xray`), PR/merge back.
-2. Tabletop x-ray on branch `tabletop-xray` (section above): working in simulation, needs headset test.
+2. 1.0 work on branch `tabletop-xray` (sections above): x-ray, table HUD, quick wheel, aim lines, Hawkeye, manual camera, black fades. Version bumped to 1.0.0; release after a headset pass (merge to main, tag v1.0.0, run the APK workflow).
 3. Windows test: `tools/run_test.ps1` (desktop simulation; `-Headset` for Virtual Desktop). Quest:
    `docs/android.md` device loop; SDK/adb on `F:\Android\sdk`, ROM at
    `/storage/emulated/0/Download/tp-linkle.iso`, app `dev.twilitrealm.dusk.vr`.
