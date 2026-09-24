@@ -55,13 +55,13 @@ line `FPS=22/72 ... App=36ms`). Read it with `adb logcat -d | grep "VrApi.*FPS="
 
 Other known gaps:
 
-- `XR_FB_passthrough` / `ALPHA_BLEND` were hidden because the manifest lacked
-  `com.oculus.feature.PASSTHROUGH`. The patch now declares it; this needs a new APK build.
-- Each CI run signs the APK with a fresh key, so installs need an uninstall first. Add a fixed
-  sideload keystore to the repo.
-- Temporary bring-up code to remove: `VR_MARK` markers, the painter depth counter, the
-  `mark: first copy_to_swapchains` log, the `PROBE` loop, and possibly the `hookLevel` cvar
-  (cheap to keep as a diagnostic).
+- Tabletop passthrough works since the manifest declares `com.oculus.feature.PASSTHROUGH`
+  (`XR_FB_passthrough` + `ALPHA_BLEND` available); tabletop runs at ~22 fps (no culling, depth cut).
+- Disc selection: Dusklight's prelaunch screen draws to the invisible 2D surface, so the VR edition
+  (patch section 5) opens the system document picker when no readable disc is configured, before
+  SDL starts the game. Verify on a clean install (`pm clear` wipes the VR edition's saves/config).
+- APKs are signed with a fixed key (repo secrets), so updates install over the previous build.
+- Pause/resume and headset removal are untested.
 
 ## The device loop (no APK rebuild needed)
 

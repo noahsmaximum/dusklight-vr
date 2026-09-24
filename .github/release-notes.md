@@ -8,8 +8,13 @@
 
 **Quest 3 (standalone, experimental)**
 1. Enable developer mode and sideload `dusklight-vr-edition-arm64.apk` (SideQuest or `adb install`). The VR mod is already inside. It installs beside the official Dusklight app as **Dusklight VR** and keeps its own saves.
-2. Copy your Twilight Princess (USA) disc image to the headset's `Download` folder.
-3. Launch **Dusklight VR** from the library (Unknown Sources). If picking the disc doesn't work in the headset, see the adb launch command in the README.
+2. Copy your Twilight Princess (USA) disc image to the headset (e.g. its `Download` folder).
+3. Launch **Dusklight VR** from the library (Unknown Sources). The first time, a file picker opens: choose your disc image and the game boots into VR. It's remembered for later launches.
+
+## What's new in 0.3.1
+
+- Quest: the first launch opens a file picker to choose your disc image. Before, a launch from the headset only showed loading dots, because Dusklight's disc screen can't be seen in VR
+- Quest: tabletop now shows your room around the diorama (passthrough is enabled in the app)
 
 ## What's new in 0.3.0
 
@@ -21,8 +26,7 @@
 ## Known issues
 
 - Quest: stereo runs at 36 fps (head rotation is reprojected at 72 Hz); motion-vector frame generation (SpaceWarp) is not in yet
-- Quest: tabletop passthrough, pause/resume and the in-headset disc picker are untested
-- Quest: the first install of this APK needs any earlier test build uninstalled (a new signing key); later updates install over it
+- Quest: pause/resume is untested; tabletop runs at about 22 fps
 - Virtual Desktop doesn't offer passthrough to apps; use a chroma-key background colour instead
 - Frosted-glass blur behind Dusklight menus is off while in VR
 - Pause-menu 3D item models look flat

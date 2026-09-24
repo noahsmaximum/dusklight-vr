@@ -39,9 +39,12 @@ a VR app manifest and a few exports the mod needs; it installs beside the offici
 Mods window. Settings live in the mod's panel there (mode, preset, world scale, HUD/menu placement,
 recenter).
 
-**Quest 3**: install the APK, copy the disc image to the headset's `Download` folder, and start
-**Dusklight VR** from the library (Unknown Sources). If the in-app disc picker doesn't work in the
-headset, start it with the image path instead (no spaces in the file name):
+**Quest 3**: install the APK, copy the disc image to the headset (e.g. its `Download` folder), and
+start **Dusklight VR** from the library (Unknown Sources). The first launch opens the system file
+picker as a panel: choose your disc image and the game boots into VR. The choice is remembered; if
+the file moves or becomes unreadable, the picker appears again.
+
+Alternatively, over adb (no spaces in the file name):
 
 ```sh
 adb shell appops set dev.twilitrealm.dusk.vr MANAGE_EXTERNAL_STORAGE allow
