@@ -71,6 +71,7 @@ bool register_config() {
     ok &= reg_bool(g_vars.levelHorizon, "levelHorizon", true);
     ok &= reg_int(g_vars.cullFov, "cullFov", 170);
     ok &= reg_bool(g_vars.disableDof, "disableDof", true);
+    ok &= reg_bool(g_vars.manualCamera, "manualCamera", true);
     ok &= reg_int(g_vars.hudFollow, "hudFollow", static_cast<int>(HudFollow::Smooth));
     ok &= reg_int(g_vars.hudDistanceCm, "hudDistanceCm", 160);
     ok &= reg_int(g_vars.hudWidthCm, "hudWidthCm", 170);
@@ -156,6 +157,7 @@ void refresh_config() {
     c.levelHorizon = get_bool(g_vars.levelHorizon, true);
     c.cullFovDeg = static_cast<int>(std::clamp<int64_t>(get_int(g_vars.cullFov, 170), 30, 178));
     c.disableDof = get_bool(g_vars.disableDof, true);
+    c.manualCamera = get_bool(g_vars.manualCamera, true);
     c.hudFollow = static_cast<HudFollow>(std::clamp<int64_t>(get_int(g_vars.hudFollow, 0), 0, 2));
     c.hudDistance = static_cast<float>(std::clamp<int64_t>(get_int(g_vars.hudDistanceCm, 160), 30, 1000)) / 100.0f;
     c.hudWidth = static_cast<float>(std::clamp<int64_t>(get_int(g_vars.hudWidthCm, 170), 20, 1000)) / 100.0f;

@@ -27,6 +27,7 @@ struct Config {
     bool levelHorizon = true;     // strip game-camera pitch/roll (comfort)
     int cullFovDeg = 170;         // sim-time frustum culling FOV (wide so turning your head never reveals holes)
     bool disableDof = true;       // depth-of-field is uncomfortable in a headset
+    bool manualCamera = true;     // the game camera turns only when you turn it (no auto-rotation)
 
     HudFollow hudFollow = HudFollow::Smooth;
     float hudDistance = 1.6f; // metres

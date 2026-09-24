@@ -135,6 +135,10 @@ ModResult build_view_tab(ModContext*, UiWindowHandle, UiElementHandle left, UiEl
     add_toggle(left, "Level horizon (comfort)", g_vars.levelHorizon,
         "Removes the game camera's pitch and roll, so the horizon stays level.");
     add_toggle(left, "Disable depth of field", g_vars.disableDof);
+    add_toggle(left, "Camera turns only when you turn it", g_vars.manualCamera,
+        "The game camera stops swinging around on its own: it keeps the angle you set with the right "
+        "stick. Z-targeting, cutscenes, transitions and fixed-angle spots still move it as usual. "
+        "Takes effect when the headset session starts.");
     add_number(left, "Culling field of view", g_vars.cullFov, 30, 178, 1, " deg",
         "How wide around the camera the game keeps drawing objects, so turning your head never shows gaps.");
 

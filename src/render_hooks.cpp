@@ -19,6 +19,7 @@
 #include "vr_config.hpp"
 #include "vr_math.hpp"
 #include "xr_runtime.hpp"
+#include "game_tweaks.hpp"
 #include "item_wheel.hpp"
 #include "xray.hpp"
 
@@ -81,6 +82,14 @@ DEFINE_HOOK_SYMBOL(VR_SYM_CLIP_SPHERE, int(const void*, const f32 (*)[4], Vec, f
 DEFINE_HOOK_SYMBOL(VR_SYM_CLIP_BOX, int(const void*, const f32 (*)[4], Vec*, Vec*),
     ClipBox);
 DEFINE_HOOK_SYMBOL("dComIfGd_drawOpaListSky", void(), DrawOpaSky);
+// The map's draw lists (terrain, buildings, and the scenery objects that sort themselves in with
+// it). The tabletop x-ray only cuts these: characters (NPCs, enemies, Link) are drawn in the actor
+// lists and stay whole.
+DEFINE_HOOK_SYMBOL("dComIfGd_drawOpaListBG", void(), DrawOpaBG);
+DEFINE_HOOK_SYMBOL("dComIfGd_drawOpaListDarkBG", void(), DrawOpaDarkBG);
+DEFINE_HOOK_SYMBOL("dComIfGd_drawOpaListMiddle", void(), DrawOpaMiddle);
+DEFINE_HOOK_SYMBOL("dComIfGd_drawXluListBG", void(), DrawXluBG);
+DEFINE_HOOK_SYMBOL("dComIfGd_drawXluListDarkBG", void(), DrawXluDarkBG);
 DEFINE_HOOK_SYMBOL("dComIfGd_drawXluListSky", void(), DrawXluSky);
 DEFINE_HOOK_SYMBOL("GXSetFog", void(GXFogType, f32, f32, f32, f32, GXColor), SetFog);
 // Screen-space projective texturing (water reflection/refraction) builds its texgen from the view's fovy/aspect.
@@ -647,9 +656,9 @@ struct XrayCoverage {
 };
 XrayCoverage g_xrayCoverage;
 
-// Tabletop x-ray for the eye apply_eye just set up: uploads its data. The x-ray fog itself runs
-// from SCENE_BEGIN (start_xray; offscreen renders before it, such as the minimap, stay untouched)
-// to FRAME_BEFORE_HUD (end_xray); xray.cpp enforces it in between.
+// Tabletop x-ray for the eye apply_eye just set up: uploads its data. The x-ray fog itself is on
+// while the map's draw lists are drawn (start_xray / stop_xray around each, see the DrawOpaBG
+// hooks); xray.cpp enforces it in between. end_xray at FRAME_BEFORE_HUD closes the eye.
 void begin_xray(const view_class& v, const gpu::CutParams& cut) {
     f.xrayOn = false;
     f.xrayReady = false;
@@ -704,14 +713,38 @@ void start_xray() {
     }
 }
 
-void end_xray() {
-    f.xrayReady = false;
+void stop_xray() {
     if (f.xrayOn) {
         f.xrayOn = false;
         const auto& m = xray::kEndMarker;
         SetFog::g_orig(GX_FOG_NONE, m.startZ, m.endZ, m.nearZ, m.farZ, GXColor{0, 0, 0, 0});
     }
 }
+
+void end_xray() {
+    stop_xray();
+    f.xrayReady = false;
+}
+
+HookAction bg_list_pre(ModContext*, void*, void*, void*) {
+    if (f.eye >= 0) {
+        start_xray();
+    }
+    return HOOK_CONTINUE;
+}
+
+void bg_list_post(ModContext*, void*, void*, void*) {
+    if (f.eye >= 0) {
+        stop_xray();
+    }
+}
+
+// Eased third-person pull-back while aiming in stereo (see painter_replace).
+struct AimPull {
+    float amount = 0.0f;
+    int64_t lastTicks = 0;
+};
+AimPull g_aimPull;
 
 bool tabletop_culling_off() {
     return config().mode == Mode::Tabletop && !f.hawk && (xr::session_running() || config().simulateHmd);
@@ -946,6 +979,10 @@ void apply_game_overrides() {
         return;
     }
     g_overridesApplied = true;
+    if (config().manualCamera) {
+        // The camera turns only when you turn it (see game_tweaks.cpp).
+        g_configOverride("game.freeCamera", "true");
+    }
     // In-memory overrides (never written to config.json): decouple rendering from the 30 Hz
     // simulation so every headset refresh gets a fresh frame, let xrWaitFrame (not the desktop
     // monitor) pace presentation, and drop effects that break in stereo.
@@ -1203,6 +1240,19 @@ void painter_replace(ModContext*, void*, void* retval, void*) {
             unitsPerMeter = config().tableUnitsPerMeter;
         } else {
             trackingFromWorld = config().levelHorizon ? level_view(gameView) : gameView;
+            // Aiming from the subject view (the camera at Link's eyes): pull the view back behind
+            // him and a little up and right, over his shoulder, so he stays in third person.
+            const int64_t now = now_ticks();
+            const float dt = g_aimPull.lastTicks != 0
+                ? std::clamp(static_cast<float>(ticks_to_ms(now - g_aimPull.lastTicks)) / 1000.0f, 0.0f, 0.1f)
+                : 0.0f;
+            g_aimPull.lastTicks = now;
+            const float target = game_tweaks::aiming_third_person() ? 1.0f : 0.0f;
+            g_aimPull.amount += (target - g_aimPull.amount) * (1.0f - std::exp(-dt * 8.0f));
+            if (g_aimPull.amount > 0.001f) {
+                const float k = g_aimPull.amount;
+                trackingFromWorld = mul(translation34(Vec3{-45.0f * k, -40.0f * k, -230.0f * k}), trackingFromWorld);
+            }
         }
     }
 
@@ -1452,10 +1502,6 @@ HookAction run_stage_pre(ModContext*, void* args, void*, void*) {
 }
 
 void run_stage_post(ModContext*, void* args, void*, void*) {
-    if (mods::arg<int>(args, 0) == GFX_STAGE_SCENE_BEGIN && f.eye >= 0) {
-        start_xray();
-        return;
-    }
     if (mods::arg<int>(args, 0) != GFX_STAGE_FRAME_BEFORE_HUD || f.eye < 0 || f.hudCapturing) {
         return;
     }
@@ -1812,12 +1858,23 @@ bool install() {
         check<ClipBox>(mods::hook::add_pre<ClipBox>(clip_pre), "J3DUClipper::clip (box)", false);
         check<DrawOpaSky>(mods::hook::add_pre<DrawOpaSky>(sky_pre), "dComIfGd_drawOpaListSky", false);
         check<DrawXluSky>(mods::hook::add_pre<DrawXluSky>(sky_pre), "dComIfGd_drawXluListSky", false);
+        check<DrawOpaBG>(mods::hook::add_pre<DrawOpaBG>(bg_list_pre), "dComIfGd_drawOpaListBG", false);
+        check<DrawOpaBG>(mods::hook::add_post<DrawOpaBG>(bg_list_post), "dComIfGd_drawOpaListBG", false);
+        check<DrawOpaDarkBG>(mods::hook::add_pre<DrawOpaDarkBG>(bg_list_pre), "dComIfGd_drawOpaListDarkBG", false);
+        check<DrawOpaDarkBG>(mods::hook::add_post<DrawOpaDarkBG>(bg_list_post), "dComIfGd_drawOpaListDarkBG", false);
+        check<DrawOpaMiddle>(mods::hook::add_pre<DrawOpaMiddle>(bg_list_pre), "dComIfGd_drawOpaListMiddle", false);
+        check<DrawOpaMiddle>(mods::hook::add_post<DrawOpaMiddle>(bg_list_post), "dComIfGd_drawOpaListMiddle", false);
+        check<DrawXluBG>(mods::hook::add_pre<DrawXluBG>(bg_list_pre), "dComIfGd_drawXluListBG", false);
+        check<DrawXluBG>(mods::hook::add_post<DrawXluBG>(bg_list_post), "dComIfGd_drawXluListBG", false);
+        check<DrawXluDarkBG>(mods::hook::add_pre<DrawXluDarkBG>(bg_list_pre), "dComIfGd_drawXluListDarkBG", false);
+        check<DrawXluDarkBG>(mods::hook::add_post<DrawXluDarkBG>(bg_list_post), "dComIfGd_drawXluListDarkBG", false);
         const ModResult fog = mods::hook::add_pre<SetFog>(fog_pre);
         check<SetFog>(fog, "GXSetFog", false);
         if (fog == MOD_OK) {
             xray::install(); // needs the fog hook to select its shaders
         }
         item_wheel::install();
+        game_tweaks::install();
         check<LightPerspective>(
             mods::hook::add_post<LightPerspective>(light_perspective_post), "C_MTXLightPerspective", false);
     }

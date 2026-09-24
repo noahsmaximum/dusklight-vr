@@ -12,6 +12,7 @@ struct ConfigVars {
     ConfigVarHandle levelHorizon = 0;
     ConfigVarHandle cullFov = 0;
     ConfigVarHandle disableDof = 0;
+    ConfigVarHandle manualCamera = 0;
     ConfigVarHandle hudFollow = 0;
     ConfigVarHandle hudDistanceCm = 0;
     ConfigVarHandle hudWidthCm = 0;
