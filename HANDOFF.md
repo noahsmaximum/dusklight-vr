@@ -200,6 +200,3 @@ Existing pieces to build on (nothing decided yet):
    `docs/android.md` device loop; SDK/adb on `F:\Android\sdk`, ROM at
    `/storage/emulated/0/Download/tp-linkle.iso`, app `dev.twilitrealm.dusk.vr`.
 4. Still unconfirmed: the Ordon Village river in the Windows headset; Quest pause/resume.
-5. v0.3.1 was tagged 2026-09-24. If its release page lacks `dusklight-vr-edition-arm64.apk`, download
-   the "Android VR APK" run for tag v0.3.1 (`gh run list --workflow android-apk.yml`) and attach it:
-   `gh run download <id> -D dist-android && gh release upload v0.3.1 dist-android/*/*.apk`.
