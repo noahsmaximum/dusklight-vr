@@ -1,4 +1,4 @@
-// Game headers first: windows.h (pulled in below) defines macros such as IN that collide with game enums.
+﻿// Game headers first: windows.h (pulled in below) defines macros such as IN that collide with game enums.
 #include "JSystem/J3DGraphAnimator/J3DModel.h"
 #include "JSystem/J3DGraphBase/J3DSys.h"
 #include "d/d_com_inf_game.h"
@@ -145,7 +145,8 @@ struct Frame {
     xr::QuadLayer quad;
     bool tabletop = false; // diorama camera + cut applied this frame
     std::array<gpu::CutParams, 2> cut{};
-    bool xrayOn = false;   // the 3D phase of a tabletop eye: every fog call becomes the x-ray fog
+    bool xrayReady = false; // this eye's x-ray data is uploaded (xrayFog points at it)
+    bool xrayOn = false;    // the 3D phase of a tabletop eye draws with the x-ray fog
     xray::FogArgs xrayFog{};
     // The current eye's projection and the symmetric fovy/aspect written into its view_class.
     Mtx44f eyeProj;
@@ -569,10 +570,12 @@ gpu::CutParams cut_params(const view_class& v) {
 
 void efb_size(uint32_t& w, uint32_t& h);
 
-// Tabletop x-ray for the eye apply_eye just set up: uploads its data and switches the GX fog to the
-// x-ray fog type for the eye's 3D phase (fog_pre keeps it there; run_stage_post ends it).
+// Tabletop x-ray for the eye apply_eye just set up: uploads its data. The x-ray fog itself runs
+// from SCENE_BEGIN (start_xray; offscreen renders before it, such as the minimap, stay untouched)
+// to FRAME_BEFORE_HUD (end_xray); xray.cpp enforces it in between.
 void begin_xray(const view_class& v, const gpu::CutParams& cut) {
     f.xrayOn = false;
+    f.xrayReady = false;
     const auto& cfg = config();
     const fopAc_ac_c* player = dComIfGp_getPlayer(0);
     if (!xray::available() || SetFog::g_orig == nullptr || player == nullptr ||
@@ -599,25 +602,23 @@ void begin_xray(const view_class& v, const gpu::CutParams& cut) {
     const float fade = cfg.tableFadeNear * cfg.tableUnitsPerMeter;
     p.fadeFar = fade > 0.0f ? fade : -1.0f;
     p.fadeNear = fade > 0.0f ? fade * 0.5f : -2.0f;
-    if (!xray::push_eye(p, f.xrayFog)) {
-        return;
+    f.xrayReady = xray::push_eye(p, f.xrayFog);
+}
+
+void start_xray() {
+    if (f.xrayReady && !f.xrayOn) {
+        f.xrayOn = true;
+        SetFog::g_orig(static_cast<GXFogType>(xray::kFogType), f.xrayFog.startZ, f.xrayFog.endZ, f.xrayFog.nearZ,
+            f.xrayFog.farZ, GXColor{0, 0, 0, 0});
     }
-    static int logged = 0;
-    if (logged < 6) {
-        ++logged;
-        mods::log::info("xray eye {}: eye ({:.0f} {:.0f} {:.0f}) link ({:.0f} {:.0f} {:.0f}) size {}x{} fog {} {} {}",
-            f.eye, p.eye[0], p.eye[1], p.eye[2], p.target[0], p.target[1], p.target[2], w, h, f.xrayFog.startZ,
-            f.xrayFog.farZ, f.xrayFog.endZ);
-    }
-    f.xrayOn = true;
-    SetFog::g_orig(static_cast<GXFogType>(xray::kFogType), f.xrayFog.startZ, f.xrayFog.endZ, f.xrayFog.nearZ,
-        f.xrayFog.farZ, GXColor{0, 0, 0, 0});
 }
 
 void end_xray() {
+    f.xrayReady = false;
     if (f.xrayOn) {
         f.xrayOn = false;
-        SetFog::g_orig(GX_FOG_NONE, 0.0f, 1.0f, 0.1f, 1.0f, GXColor{0, 0, 0, 0});
+        const auto& m = xray::kEndMarker;
+        SetFog::g_orig(GX_FOG_NONE, m.startZ, m.endZ, m.nearZ, m.farZ, GXColor{0, 0, 0, 0});
     }
 }
 
@@ -1113,6 +1114,10 @@ HookAction run_stage_pre(ModContext*, void* args, void*, void*) {
 }
 
 void run_stage_post(ModContext*, void* args, void*, void*) {
+    if (mods::arg<int>(args, 0) == GFX_STAGE_SCENE_BEGIN && f.eye >= 0) {
+        start_xray();
+        return;
+    }
     if (mods::arg<int>(args, 0) != GFX_STAGE_FRAME_BEFORE_HUD || f.eye < 0 || f.hudCapturing) {
         return;
     }
@@ -1190,18 +1195,9 @@ HookAction sky_pre(ModContext*, void*, void*, void*) {
 HookAction fog_pre(ModContext*, void* args, void*, void*) {
     // Fog is computed from the distance to the eye, which in tabletop is thousands of game units
     // away from everything (the whole diorama would fog over).
-    // During the x-ray phase every fog call is turned into the x-ray fog instead (see xray.hpp).
+    // (During the x-ray phase the fog registers are replaced further down, see xray.hpp.)
     if (f.eye >= 0 && f.tabletop) {
-        if (f.xrayOn) {
-            mods::arg_ref<GXFogType>(args, 0) = static_cast<GXFogType>(xray::kFogType);
-            mods::arg_ref<f32>(args, 1) = f.xrayFog.startZ;
-            mods::arg_ref<f32>(args, 2) = f.xrayFog.endZ;
-            mods::arg_ref<f32>(args, 3) = f.xrayFog.nearZ;
-            mods::arg_ref<f32>(args, 4) = f.xrayFog.farZ;
-            mods::arg_ref<GXColor>(args, 5) = GXColor{0, 0, 0, 0};
-        } else {
-            mods::arg_ref<GXFogType>(args, 0) = GX_FOG_NONE;
-        }
+        mods::arg_ref<GXFogType>(args, 0) = GX_FOG_NONE;
     }
     return HOOK_CONTINUE;
 }

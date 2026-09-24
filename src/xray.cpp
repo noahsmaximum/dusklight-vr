@@ -18,6 +18,11 @@
 
 using CreateShaderModuleFn = WGPUShaderModule (*)(WGPUDevice, const WGPUShaderModuleDescriptor*);
 
+// Aurora's decoders for the fog registers (every write goes through them, in command order,
+// including the ones recorded in material display lists).
+DEFINE_HOOK_SYMBOL("extern/aurora/lib/gx/regs.cpp#aurora::gx::fifo::bp_fog0", void(uint8_t, uint32_t), BpFog0);
+DEFINE_HOOK_SYMBOL("extern/aurora/lib/gx/regs.cpp#aurora::gx::fifo::bp_fog3", void(uint8_t, uint32_t), BpFog3);
+
 #ifndef _WIN32
 // Dawn is linked into the game on Android, so its entry point can be hooked like a game function.
 DEFINE_HOOK_SYMBOL("wgpuDeviceCreateShaderModule",
@@ -36,17 +41,17 @@ CreateShaderModuleFn g_origCreate = nullptr;
 // What Aurora emits for this fog type (gx/shader.cpp): the orthographic comment, the reverse-exp2
 // curve, and the final blend with the fog colour, which the cut-out replaces.
 constexpr std::string_view kOrthoMarker = "// Orthographic fog";
-constexpr std::string_view kRevExp2Marker = "fogF = 1.0 - fogF;";
+constexpr std::string_view kRevExp2Marker = "var fogZ = exp2(-8.0 * (1.0 - fogF));";
 constexpr std::string_view kFogBlend =
     "prev = vec4f(mix(prev.rgb, ubuf.fog.color.rgb, clamp(fogZ, 0.0, 1.0)), prev.a);";
 
 // Eye data layout (8 x vec4f, see push_eye):
 //   q0..q3 worldFromClip   q4 eye.xyz, target width   q5 Link.xyz, target height
 //   q6 radius, taper, fadeNear, fadeFar                q7 margin
-// Fog a/c hold the data's offset in 16-byte units: a = high bits, c = 2048 + low 10 bits.
+// Fog a/c hold the data's offset in 16-byte units: a = 1 + high bits, c = 2048 + low 10 bits.
 constexpr std::string_view kCutout = R"(// Dusklight VR: tabletop x-ray (replaces this fog type's colour blend)
     {
-        let xb = (u32(ubuf.fog.a) * 1024u + u32(ubuf.fog.c) - 2048u) * 4u;
+        let xb = ((u32(ubuf.fog.a) - 1u) * 1024u + u32(ubuf.fog.c) - 2048u) * 4u;
         let q0 = bitcast<vec4f>(vec4u(abuf[xb + 0u], abuf[xb + 1u], abuf[xb + 2u], abuf[xb + 3u]));
         let q1 = bitcast<vec4f>(vec4u(abuf[xb + 4u], abuf[xb + 5u], abuf[xb + 6u], abuf[xb + 7u]));
         let q2 = bitcast<vec4f>(vec4u(abuf[xb + 8u], abuf[xb + 9u], abuf[xb + 10u], abuf[xb + 11u]));
@@ -56,7 +61,9 @@ constexpr std::string_view kCutout = R"(// Dusklight VR: tabletop x-ray (replace
         let q6 = bitcast<vec4f>(vec4u(abuf[xb + 24u], abuf[xb + 25u], abuf[xb + 26u], abuf[xb + 27u]));
         let q7 = bitcast<vec4f>(vec4u(abuf[xb + 28u], abuf[xb + 29u], abuf[xb + 30u], abuf[xb + 31u]));
         let xrSize = vec2f(q4.w, q5.w);
-        if (all(abs(ubuf.render_viewport_size - xrSize) < vec2f(1.0))) {
+        // Only perspective draws into the eye's own target: screen-space passes (orthographic, e.g.
+        // bloom or colour filters) and offscreen renders (minimap, shadows) are left alone.
+        if (ubuf.proj[3].w == 0.0 && all(abs(ubuf.render_viewport_size - xrSize) < vec2f(1.0))) {
             let xrUv = in.pos.xy / xrSize;
             let xrH = mat4x4f(q0, q1, q2, q3) * vec4f(xrUv.x * 2.0 - 1.0, 1.0 - xrUv.y * 2.0, in.pos.z, 1.0);
             let xrWorld = xrH.xyz / xrH.w;
@@ -98,8 +105,8 @@ bool patch_source(std::string_view code, std::string& out) {
     }
     out.reserve(code.size() + kCutout.size());
     out.assign(code.substr(0, blend));
-    // DUSKLIGHT_VR_XRAY_DEBUG=1 tints instead of cutting: green = x-ray draw, blue = other render
-    // target (skipped), magenta = would be cut.
+    // DUSKLIGHT_VR_XRAY_DEBUG=1 paints instead of cutting: magenta = would be cut, yellow = the line
+    // from the eye to Link.
     static const bool debug = [] {
         const char* v = std::getenv("DUSKLIGHT_VR_XRAY_DEBUG");
         return v != nullptr && v[0] == '1';
@@ -110,19 +117,18 @@ bool patch_source(std::string_view code, std::string& out) {
             const size_t at = dbg.find(a);
             if (at != std::string::npos) dbg.replace(at, a.size(), b);
         };
-        replace("                discard;", "                prev = vec4f(1.0, 0.0, 1.0, 1.0);");
-        if (std::getenv("DUSKLIGHT_VR_XRAY_DEBUG")[1] == 'd') {
-            // "1d": show the decoded data instead: r = data slot, g = target width ok, b = radius ok.
+        if (std::getenv("DUSKLIGHT_VR_XRAY_DEBUG")[1] == 's') {
+            // "1s": perspective draws show their viewport size relative to the eye target (0.5 = equal).
             replace("        let xrSize = vec2f(q4.w, q5.w);",
                 "        let xrSize = vec2f(q4.w, q5.w);\n"
-                "        prev = vec4f(f32(xb) / 64.0, q4.w / 1216.0, q6.x / 200.0, 1.0);");
+                "        if (ubuf.proj[3].w == 0.0) { prev = vec4f(ubuf.render_viewport_size / max(xrSize, vec2f(1.0)) * 0.5, "
+                "select(0.0, 1.0, xrSize.x == 0.0), 1.0); }");
         }
-        replace("            let xrUv = in.pos.xy / xrSize;",
-            ""
-            "            let xrUv = in.pos.xy / xrSize;");
-        replace("        if (all(abs(ubuf.render_viewport_size - xrSize) < vec2f(1.0))) {",
-            ""
-            "        if (all(abs(ubuf.render_viewport_size - xrSize) < vec2f(1.0))) {");
+        // The eye-to-Link line itself (a thin core of the cylinder) in yellow, over the magenta.
+        replace("                discard;\n            }",
+            "                prev = vec4f(1.0, 0.0, 1.0, 1.0);\n            }\n"
+            "            if (xrAlong > 0.0 && xrAlong < xrLinkDist && length(xrToFrag - xrDir * xrAlong) < 15.0) {\n"
+            "                prev = vec4f(1.0, 1.0, 0.0, 1.0);\n            }");
         out.append(dbg);
     } else {
         out.append(kCutout);
@@ -166,6 +172,55 @@ WGPUShaderModule create_shader_module(
     return next(device, &copy);
 }
 
+// --- Fog registers -------------------------------------------------------------------------------
+// Most world materials set fog from precompiled display lists, which never call GXSetFog. So the
+// eye's x-ray fog is enforced where Aurora decodes the registers: the mod's own GXSetFog with the
+// x-ray type starts it (and carries the eye's values), the end marker stops it, and every fog write
+// in between is replaced. These run on Aurora's GX command thread, in command order.
+
+uint32_t g_lastFog0 = 0;
+uint32_t g_xrFog0 = 0;
+uint32_t g_xrFog3 = 0;
+bool g_xrActive = false;
+
+uint32_t fog3_type(uint32_t value) { return ((value >> 21) & 7u) | (((value >> 20) & 1u) << 3); }
+
+// FOG3's C field (sign, exponent, top 11 mantissa bits) for a float, as GXSetFog encodes it.
+uint32_t fog3_c_field(float c) {
+    uint32_t bits;
+    std::memcpy(&bits, &c, sizeof(bits));
+    return ((bits >> 12) & 0x7FFu) | (((bits >> 23) & 0xFFu) << 11) | ((bits >> 31) << 19);
+}
+
+bool is_end_marker(uint32_t value) {
+    static const uint32_t field = fog3_c_field(kEndMarker.startZ / (kEndMarker.endZ - kEndMarker.startZ));
+    return fog3_type(value) == 0 && (value & 0xFFFFFu) == field;
+}
+
+HookAction fog0_pre(ModContext*, void* args, void*, void*) {
+    uint32_t& value = mods::arg_ref<uint32_t>(args, 1);
+    g_lastFog0 = value;
+    if (g_xrActive) {
+        value = g_xrFog0;
+    }
+    return HOOK_CONTINUE;
+}
+
+HookAction fog3_pre(ModContext*, void* args, void*, void*) {
+    uint32_t& value = mods::arg_ref<uint32_t>(args, 1);
+    if (fog3_type(value) == static_cast<uint32_t>(kFogType)) {
+        // Begin marker (the game never uses this type): its FOG0 was written just before.
+        g_xrFog0 = g_lastFog0;
+        g_xrFog3 = value;
+        g_xrActive = true;
+    } else if (is_end_marker(value)) {
+        g_xrActive = false;
+    } else if (g_xrActive) {
+        value = g_xrFog3;
+    }
+    return HOOK_CONTINUE;
+}
+
 #ifdef _WIN32
 WGPUShaderModule hk_create_shader_module(WGPUDevice device, const WGPUShaderModuleDescriptor* desc) {
     return create_shader_module(device, desc, g_origCreate);
@@ -176,6 +231,16 @@ void create_shader_module_replace(ModContext*, void* args, void* retval, void*) 
         mods::arg<const WGPUShaderModuleDescriptor*>(args, 1), CreateShaderModule::g_orig);
 }
 #endif
+
+void uninstall_shader_hook() {
+#ifdef _WIN32
+    if (g_origCreate != nullptr) {
+        restore_import(GetModuleHandleW(nullptr), "webgpu_dawn.dll", "wgpuDeviceCreateShaderModule",
+            reinterpret_cast<void*>(g_origCreate));
+        g_origCreate = nullptr;
+    }
+#endif
+}
 
 } // namespace
 
@@ -199,6 +264,11 @@ bool install() {
         return false;
     }
 #endif
+    if (mods::hook::add_pre<BpFog0>(fog0_pre) != MOD_OK || mods::hook::add_pre<BpFog3>(fog3_pre) != MOD_OK) {
+        mods::log::warn("Tabletop x-ray unavailable: could not hook Aurora's fog registers");
+        uninstall_shader_hook();
+        return false;
+    }
     g_installed = true;
     return true;
 }
@@ -207,11 +277,7 @@ void uninstall() {
     if (!g_installed) {
         return;
     }
-#ifdef _WIN32
-    restore_import(GetModuleHandleW(nullptr), "webgpu_dawn.dll", "wgpuDeviceCreateShaderModule",
-        reinterpret_cast<void*>(g_origCreate));
-    g_origCreate = nullptr;
-#endif
+    uninstall_shader_hook();
     g_installed = false;
 }
 
@@ -239,16 +305,17 @@ bool push_eye(const EyeParams& p, FogArgs& out) {
     }
     const uint32_t units = range.offset / 16u;
     const uint32_t hi = units >> 10;
-    if (hi >= 2048u) {
+    if (hi >= 2047u) {
         return false; // beyond what the fog registers carry exactly (32 MiB)
     }
     // Orthographic fog: a = (farZ - nearZ) / (endZ - startZ), c = (startZ - nearZ) / (endZ - startZ).
-    // Both are small integers, exact in the registers' 12-bit mantissa. c > a also keeps an
-    // unpatched shader (built before the hook) from fogging: its fog factor clamps to ~0.
+    // Both are small integers, exact in the registers' 12-bit mantissa. GXSetFog zeroes both when
+    // farZ == nearZ, hence a = 1 + high bits. c > a also keeps an unpatched shader (built before the
+    // hook) from fogging: its fog factor clamps to ~0.
     out.startZ = 2048.0f + static_cast<float>(units & 1023u);
     out.endZ = out.startZ + 1.0f;
     out.nearZ = 0.0f;
-    out.farZ = static_cast<float>(hi);
+    out.farZ = static_cast<float>(hi + 1u);
     return true;
 }
 

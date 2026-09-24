@@ -7,14 +7,14 @@
 //
 // It has to happen while the scene is drawn (an occluder has already overwritten Link by the time
 // the frame is finished), so the mod adds a cut-out to Aurora's generated GX shaders. The shaders
-// are rewritten as Dawn creates them: one fog type the game never uses (orthographic reverse-exp2)
+// are rewritten as Dawn creates them: one fog type the game never uses (orthographic reverse-exp)
 // is replaced by the cut-out. In tabletop, fog is off anyway, so every 3D draw of an eye is given
-// that fog type, and its fog parameters carry where this eye's x-ray data sits in Aurora's storage
-// buffer (which GX fragment shaders can read).
+// that fog type (enforced at Aurora's fog register decoders), and its fog parameters carry where
+// this eye's x-ray data sits in Aurora's storage buffer (which GX fragment shaders can read).
 namespace vr::xray {
 
 // The fog type that selects the cut-out.
-constexpr int kFogType = 0x0F; // GX_FOG_ORTHO_REVEXP2
+constexpr int kFogType = 0x0E; // GX_FOG_ORTHO_REVEXP
 
 // Installs the shader rewrite. Without it the x-ray is unavailable (tabletop still works).
 bool install();
@@ -39,6 +39,9 @@ struct EyeParams {
 struct FogArgs {
     float startZ, endZ, nearZ, farZ;
 };
+
+// GXSetFog arguments that end the x-ray phase (type GX_FOG_NONE, C = -3, which the game never sets).
+constexpr FogArgs kEndMarker{-3.0f, -2.0f, 0.1f, 1.0f};
 
 // Game thread, while recording: uploads `p` to this frame's storage buffer. False if the upload
 // failed (the eye then draws without x-ray).
