@@ -1,6 +1,7 @@
 ﻿// Game headers first: windows.h (pulled in below) defines macros such as IN that collide with game enums.
 #include "JSystem/J3DGraphAnimator/J3DModel.h"
 #include "JSystem/J3DGraphBase/J3DSys.h"
+#include "d/actor/d_a_alink.h"
 #include "d/d_bg_s_lin_chk.h"
 #include "d/d_com_inf_game.h"
 #include "d/d_menu_window.h"
@@ -43,6 +44,8 @@
 // --- Hook targets ------------------------------------------------------------------------------------
 
 DEFINE_HOOK_SYMBOL("aurora_begin_frame", bool(), AuroraBeginFrame);
+// Link's aiming reticle (a 2D sprite projected with the game camera); the aim line replaces it.
+DEFINE_HOOK_SYMBOL("daAlink_sight_c::draw", void(void*), SightDraw);
 DEFINE_HOOK_SYMBOL("aurora_end_frame", void(), AuroraEndFrame);
 // Render worker, right after the frame is submitted (and presented). One-line wrapper; its callee is
 // the fallback in case the wrapper is inlined.
@@ -149,6 +152,7 @@ struct Frame {
     xr::QuadLayer quad;
     bool tabletop = false; // diorama camera + cut applied this frame
     std::array<gpu::CutParams, 2> cut{};
+    std::array<Mtx44f, 2> clipFromWorld{}; // each eye's, as the GPU sees it
     Mtx34 trackingFromWorld;  // tabletop: world (game units) -> tracking space (game units)
     bool xrayReady = false; // this eye's x-ray data is uploaded (xrayFog points at it)
     bool xrayOn = false;    // the 3D phase of a tabletop eye draws with the x-ray fog
@@ -538,19 +542,25 @@ Mtx34 table_transform(const Mtx34& gameView, const ViewBackup& base) {
     return mul(translation34(tablePos), mul(rot_y34(yaw), translation34(g_table.anchor * -1.0f)));
 }
 
+// World -> clip space as Aurora feeds it to the GPU (see fill_uniform in aurora's shader_info.cpp),
+// for the view/projection in `v`.
+Mtx44f gpu_clip_from_world(const view_class& v) {
+    const bool reversed = gpu::reversed_z();
+    Mtx44f proj;
+    std::memcpy(proj.m, v.projMtx, sizeof(proj.m));
+    for (int c = 0; c < 4; ++c) {
+        proj.m[2][c] = reversed ? -proj.m[2][c] : proj.m[2][c] + proj.m[3][c];
+    }
+    return mul(proj, load(v.viewMtx));
+}
+
 // Uniforms for the cut shader of one eye, from the view/projection apply_eye just wrote.
 gpu::CutParams cut_params(const view_class& v) {
     const auto& cfg = config();
     const float s = cfg.tableUnitsPerMeter;
     const bool reversed = gpu::reversed_z();
 
-    // Clip space as Aurora feeds it to the GPU (see fill_uniform in aurora's shader_info.cpp).
-    Mtx44f proj;
-    std::memcpy(proj.m, v.projMtx, sizeof(proj.m));
-    for (int c = 0; c < 4; ++c) {
-        proj.m[2][c] = reversed ? -proj.m[2][c] : proj.m[2][c] + proj.m[3][c];
-    }
-    const Mtx44f clipFromWorld = mul(proj, load(v.viewMtx));
+    const Mtx44f clipFromWorld = gpu_clip_from_world(v);
     Mtx44f worldFromClip;
     gpu::CutParams p;
     if (!inverse44(clipFromWorld, worldFromClip)) {
@@ -910,6 +920,8 @@ void apply_game_overrides() {
     g_configOverride("video.enableVsync", "false");
     g_configOverride("game.enableMirrorMode", "false");
     g_configOverride("game.disableLetterboxing", "1");
+    // The aim line needs the bow to report its sight (Dusklight otherwise only does for the reticle).
+    g_configOverride("game.aimingReticle", "true");
     // Depth of field through the game's own setting: drawDepth2 must still run, because it also
     // makes the framebuffer copy that water refraction samples (skipping it = "portal" water).
     if (config().disableDof) {
@@ -1093,8 +1105,11 @@ void end_hud_capture() {
     gpu::push_restore(f.sceneNoHud, f.tabletop);
 }
 
+void update_aim();
+
 void painter_replace(ModContext*, void*, void* retval, void*) {
     item_wheel::debug_tick();
+    update_aim();
     // Recorded by this frame's actor draws; the next frame's draws record them again (and models
     // can be deleted by the simulation in between).
     struct ClearBgModels {
@@ -1165,6 +1180,7 @@ void painter_replace(ModContext*, void*, void* retval, void*) {
         }
         if (cam != nullptr) {
             apply_eye(cam->view, backup, trackingFromWorld, unitsPerMeter, eye);
+            f.clipFromWorld[eye] = gpu_clip_from_world(cam->view);
             if (f.tabletop) {
                 f.cut[eye] = cut_params(cam->view);
                 begin_xray(cam->view, f.cut[eye]);
@@ -1193,6 +1209,120 @@ void painter_replace(ModContext*, void*, void* retval, void*) {
     f.quad = place_quad(dComIfGp_isPauseFlag() != 0, !f.hasCamera);
     ++g_stereoFrames;
     if (retval) *static_cast<int*>(retval) = result;
+}
+
+// --- Aim line ---------------------------------------------------------------------------------------
+// While Link aims (bow, slingshot, clawshot, dominion rod, boomerang), a dashed line in the item's
+// colour runs from the item to where the shot lands. It replaces the game's reticle, which is a flat
+// sprite placed for the game camera and sits wrong in a headset.
+
+struct AimLine {
+    bool on = false;
+    Vec3 from, to;
+    float rgb[3] = {};
+    bool locked = false; // clawshot / dominion rod target locked on
+};
+AimLine g_aim;
+
+// Game thread, once per frame before the eyes are painted.
+void update_aim() {
+    g_aim.on = false;
+    daAlink_c* link = daAlink_getAlinkActorClass();
+    static const bool testLine = std::getenv("DUSKLIGHT_VR_TEST_AIM") != nullptr; // dev: always show one
+    if (testLine && link != nullptr) {
+        const float yaw = static_cast<float>(link->shape_angle.y) * kPi / 32768.0f;
+        g_aim.from = Vec3{link->current.pos.x, link->current.pos.y + 100.0f, link->current.pos.z};
+        g_aim.to = g_aim.from + Vec3{std::sin(yaw) * 800.0f, 0.0f, std::cos(yaw) * 800.0f};
+        g_aim.rgb[0] = 1.0f;
+        g_aim.rgb[1] = 214.0f / 255.0f;
+        g_aim.rgb[2] = 64.0f / 255.0f;
+        g_aim.locked = false;
+        g_aim.on = true;
+        return;
+    }
+    if (link == nullptr || !link->mSight.getDrawFlg() || dComIfGp_checkPlayerStatus0(0, 0x200000)) {
+        return; // not aiming, or looking through the Hawkeye
+    }
+    const auto from_actor = [&](const cXyz& fallback) {
+        const fopAc_ac_c* actor = link->mItemAcKeep.getActor();
+        const cXyz& p = actor != nullptr ? actor->current.pos : fallback;
+        return Vec3{p.x, p.y, p.z};
+    };
+    const auto set_rgb = [&](int r, int g, int b) {
+        g_aim.rgb[0] = static_cast<float>(r) / 255.0f;
+        g_aim.rgb[1] = static_cast<float>(g) / 255.0f;
+        g_aim.rgb[2] = static_cast<float>(b) / 255.0f;
+    };
+    switch (link->mEquipItem) {
+    case dItemNo_BOW_e:
+    case dItemNo_BOMB_ARROW_e:
+    case dItemNo_HAWK_ARROW_e:
+        set_rgb(255, 214, 64); // yellow
+        g_aim.from = from_actor(link->mItemPos);
+        break;
+    case dItemNo_PACHINKO_e:
+        set_rgb(160, 104, 52); // brown
+        g_aim.from = Vec3{link->mHeldItemRootPos.x, link->mHeldItemRootPos.y, link->mHeldItemRootPos.z};
+        break;
+    case dItemNo_HOOKSHOT_e:
+    case dItemNo_W_HOOKSHOT_e:
+        set_rgb(235, 50, 45); // red
+        g_aim.from = Vec3{link->mHeldItemRootPos.x, link->mHeldItemRootPos.y, link->mHeldItemRootPos.z};
+        break;
+    case dItemNo_COPY_ROD_e:
+        set_rgb(40, 205, 195); // teal
+        g_aim.from = Vec3{link->mRightHandPos.x, link->mRightHandPos.y, link->mRightHandPos.z};
+        break;
+    case dItemNo_BOOMERANG_e:
+        set_rgb(245, 245, 245); // white
+        g_aim.from = from_actor(link->mItemPos);
+        break;
+    default:
+        return;
+    }
+    const cXyz* to = link->mSight.getPosP();
+    g_aim.to = Vec3{to->x, to->y, to->z};
+    g_aim.locked = link->mSight.getLockFlg() != 0;
+    g_aim.on = length(g_aim.to - g_aim.from) > 1.0f;
+}
+
+// Game thread, per eye at FRAME_BEFORE_HUD.
+void push_aim_line() {
+    if (!g_aim.on || f.eye < 0) {
+        return;
+    }
+    gpu::LineParams p;
+    const Mtx44f& m = f.clipFromWorld[f.eye];
+    for (int r = 0; r < 4; ++r) {
+        for (int c = 0; c < 4; ++c) {
+            p.clipFromWorld[c * 4 + r] = m.m[r][c];
+        }
+    }
+    static const int64_t start = now_ticks();
+    uint32_t w, h;
+    efb_size(w, h);
+    p.start[0] = g_aim.from.x;
+    p.start[1] = g_aim.from.y;
+    p.start[2] = g_aim.from.z;
+    p.start[3] = static_cast<float>(h) / 220.0f; // half width: a few pixels at any resolution
+    p.end[0] = g_aim.to.x;
+    p.end[1] = g_aim.to.y;
+    p.end[2] = g_aim.to.z;
+    p.end[3] = static_cast<float>(ticks_to_ms(now_ticks() - start) / 1000.0);
+    p.color[0] = g_aim.rgb[0];
+    p.color[1] = g_aim.rgb[1];
+    p.color[2] = g_aim.rgb[2];
+    p.color[3] = g_aim.locked ? 1.0f : 0.85f;
+    p.viewport[0] = static_cast<float>(w);
+    p.viewport[1] = static_cast<float>(h);
+    p.viewport[2] = 40.0f;                        // dash period (game units)
+    p.viewport[3] = g_aim.locked ? 160.0f : 90.0f; // marching speed (game units per second)
+    gpu::push_line(p);
+}
+
+HookAction sight_draw_pre(ModContext*, void*, void*, void*) {
+    // The eye passes draw the aim line instead.
+    return f.eye >= 0 ? HOOK_SKIP_ORIGINAL : HOOK_CONTINUE;
 }
 
 HookAction run_stage_pre(ModContext*, void* args, void*, void*) {
@@ -1225,6 +1355,7 @@ void run_stage_post(ModContext*, void* args, void*, void*) {
             gpu::push_cut(out.depth, f.cut[f.eye]);
         }
     }
+    push_aim_line(); // over the scene (and the table cut), under the HUD
     f.sceneNoHud = resolve_color();
     if (f.sceneNoHud == nullptr) {
         return;
@@ -1553,6 +1684,7 @@ bool install() {
         check<Trimming>(mods::hook::add_pre<Trimming>(trimming_pre), "trimming", false);
         check<ClipperSetup>(mods::hook::add_pre<ClipperSetup>(clipper_setup_pre), "mDoLib_clipper::setup", false);
         check<GetWindowSize>(mods::hook::add_post<GetWindowSize>(window_size_post), "get_window_size", false);
+        check<SightDraw>(mods::hook::add_pre<SightDraw>(sight_draw_pre), "daAlink_sight_c::draw", false);
         check<ClipSphere>(mods::hook::add_pre<ClipSphere>(clip_pre), "J3DUClipper::clip (sphere)", false);
         check<ClipBox>(mods::hook::add_pre<ClipBox>(clip_pre), "J3DUClipper::clip (box)", false);
         check<DrawOpaSky>(mods::hook::add_pre<DrawOpaSky>(sky_pre), "dComIfGd_drawOpaListSky", false);

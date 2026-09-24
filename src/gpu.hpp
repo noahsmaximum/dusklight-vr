@@ -42,6 +42,16 @@ struct CutParams {
     float params[4]{};         // x = radial feather, y = floor height, z = floor feather, w = far depth value
 };
 
+// Aim line (WGSL layout: mat4x4f + 4 x vec4f): a glowing, dashed ribbon between two world points,
+// drawn over the scene with premultiplied alpha.
+struct LineParams {
+    float clipFromWorld[16]{}; // column-major, clip space as the GPU sees it
+    float start[4]{};          // xyz = start (world units), w = half width (pixels)
+    float end[4]{};            // xyz = end, w = time (seconds, animates the dashes)
+    float color[4]{};          // rgb (0..1), a = strength
+    float viewport[4]{};       // xy = target size (pixels), z = dash period (world units), w = dash speed
+};
+
 // Game thread: queue the desktop mirror draw into the current EFB pass.
 void push_mirror(const MirrorPayload& payload);
 // Game thread: copy a resolved scene snapshot back into the current EFB pass.
@@ -51,5 +61,7 @@ void push_clear(bool white = false);
 // Game thread: multiply the current EFB colour by the table mask computed from `depth` (a
 // resolve_pass depth snapshot of the same pass) and write the mask into alpha.
 void push_cut(WGPUTextureView depth, const CutParams& params);
+// Game thread: draw an aim line into the current EFB pass.
+void push_line(const LineParams& params);
 
 } // namespace vr::gpu

@@ -102,7 +102,66 @@ struct Cut {
 }
 )";
 
-enum class Kind { Blit, BlitAlpha, Key, Combine, CombineOver, ClearBlackRev, ClearBlackStd, ClearWhiteRev, ClearWhiteStd, Cut };
+// Aim line: a camera-facing ribbon between two world points, expanded in screen space so it keeps
+// its pixel width at any distance. Marching dashes run along it towards the target, over a soft glow.
+constexpr const char* kLineShader = R"(
+struct Line {
+    clip_from_world: mat4x4f,
+    start: vec4f,
+    end: vec4f,
+    color: vec4f,
+    viewport: vec4f,
+};
+
+@group(0) @binding(0) var<uniform> line: Line;
+
+struct LineOut {
+    @builtin(position) pos: vec4f,
+    @location(0) side: f32,
+    @location(1) along: f32,
+    @location(2) t: f32,
+};
+
+@vertex fn vs_line(@builtin(vertex_index) vi: u32) -> LineOut {
+    var ts = array<f32, 6>(0.0, 1.0, 0.0, 0.0, 1.0, 1.0);
+    var ss = array<f32, 6>(-1.0, -1.0, 1.0, 1.0, -1.0, 1.0);
+    let t = ts[vi];
+    let s = ss[vi];
+    let ca = line.clip_from_world * vec4f(line.start.xyz, 1.0);
+    let cb = line.clip_from_world * vec4f(line.end.xyz, 1.0);
+    let pa = ca.xy / max(ca.w, 1e-3) * line.viewport.xy;
+    let pb = cb.xy / max(cb.w, 1e-3) * line.viewport.xy;
+    var dir = pb - pa;
+    if (length(dir) < 1e-3) {
+        dir = vec2f(1.0, 0.0);
+    }
+    dir = normalize(dir);
+    let n = vec2f(-dir.y, dir.x);
+    var c = mix(ca, cb, t);
+    let w = max(c.w, 1e-3);
+    c = vec4f(c.xy + n * s * line.start.w * 2.0 / line.viewport.xy * w, w * 0.5, w);
+    var o: LineOut;
+    o.pos = c;
+    o.side = s;
+    o.along = t * distance(line.start.xyz, line.end.xyz);
+    o.t = t;
+    return o;
+}
+
+@fragment fn fs_line(in: LineOut) -> @location(0) vec4f {
+    let d = abs(in.side);
+    let phase = fract((in.along - line.end.w * line.viewport.w) / line.viewport.z);
+    let dash = step(phase, 0.55);
+    let core = (1.0 - smoothstep(0.2, 0.35, d)) * dash;
+    let glow = exp(-d * d * 4.0) * 0.4;
+    let fade = smoothstep(0.0, 0.05, in.t);
+    let a = clamp((core + glow) * line.color.a * fade, 0.0, 1.0);
+    let rgb = mix(line.color.rgb, vec3f(1.0), core * 0.3);
+    return vec4f(rgb * a, a);
+}
+)";
+
+enum class Kind { Blit, BlitAlpha, Key, Combine, CombineOver, ClearBlackRev, ClearBlackStd, ClearWhiteRev, ClearWhiteStd, Cut, Line };
 
 struct State {
     WGPUDevice device = nullptr;
@@ -125,6 +184,11 @@ struct State {
     GfxDrawTypeHandle restoreDraw = 0;
     GfxDrawTypeHandle clearDraw = 0;
     GfxDrawTypeHandle cutDraw = 0;
+    GfxDrawTypeHandle lineDraw = 0;
+    // Aim line: its own module/layout (one uniform buffer).
+    WGPUShaderModule lineModule = nullptr;
+    WGPUBindGroupLayout lineBgl = nullptr;
+    WGPUPipelineLayout lineLayout = nullptr;
     // Tabletop cut: its own module/layout (unfilterable depth + uniform buffer).
     WGPUShaderModule cutModule = nullptr;
     WGPUBindGroupLayout cutBgl = nullptr;
@@ -153,6 +217,8 @@ const char* entry_for(Kind k) {
         return "fs_blit_alpha";
     case Kind::Cut:
         return "fs_cut";
+    case Kind::Line:
+        return "fs_line";
     case Kind::Combine:
     case Kind::CombineOver:
         return "fs_combine";
@@ -171,8 +237,10 @@ const char* entry_for(Kind k) {
 WGPURenderPipeline create_pipeline(const WGPUColorTargetState* targets, uint32_t targetCount,
     WGPUTextureFormat depthFormat, uint32_t samples, Kind kind) {
     const bool cut = kind == Kind::Cut;
+    const bool line = kind == Kind::Line;
+    WGPUShaderModule module = cut ? g.cutModule : (line ? g.lineModule : g.module);
     WGPUFragmentState fs = WGPU_FRAGMENT_STATE_INIT;
-    fs.module = cut ? g.cutModule : g.module;
+    fs.module = module;
     fs.entryPoint = sv(entry_for(kind));
     fs.targetCount = targetCount;
     fs.targets = targets;
@@ -186,9 +254,9 @@ WGPURenderPipeline create_pipeline(const WGPUColorTargetState* targets, uint32_t
 
     WGPURenderPipelineDescriptor desc = WGPU_RENDER_PIPELINE_DESCRIPTOR_INIT;
     desc.label = sv("Dusklight VR composite");
-    desc.layout = cut ? g.cutLayout : g.layout;
-    desc.vertex.module = cut ? g.cutModule : g.module;
-    desc.vertex.entryPoint = sv("vs_main");
+    desc.layout = cut ? g.cutLayout : (line ? g.lineLayout : g.layout);
+    desc.vertex.module = module;
+    desc.vertex.entryPoint = sv(line ? "vs_line" : "vs_main");
     desc.primitive.topology = WGPUPrimitiveTopology_TriangleList;
     desc.depthStencil = depthFormat != WGPUTextureFormat_Undefined ? &ds : nullptr;
     desc.multisample.count = samples;
@@ -221,7 +289,8 @@ WGPURenderPipeline scene_pipeline(const GfxRenderTargetLayout& layout, Kind kind
     WGPUBlendState mask{};
     mask.color = {WGPUBlendOperation_Add, WGPUBlendFactor_Zero, WGPUBlendFactor_SrcAlpha};
     mask.alpha = {WGPUBlendOperation_Add, WGPUBlendFactor_One, WGPUBlendFactor_Zero};
-    const WGPUBlendState* blend = kind == Kind::CombineOver ? &over : (kind == Kind::Cut ? &mask : nullptr);
+    const WGPUBlendState* blend =
+        (kind == Kind::CombineOver || kind == Kind::Line) ? &over : (kind == Kind::Cut ? &mask : nullptr);
     WGPUColorTargetState targets[GFX_MAX_COLOR_ATTACHMENTS];
     const uint32_t count = gfx_init_color_target_states(&layout, targets, blend, WGPUColorWriteMask_All);
     if (!g.formatLogged) {
@@ -348,6 +417,27 @@ void cut_draw(ModContext*, const GfxDrawContext* ctx, const void* payload, size_
     wgpuBindGroupRelease(bg);
 }
 
+void line_draw(ModContext*, const GfxDrawContext* ctx, const void* payload, size_t size, void*) {
+    if (size != sizeof(GfxRange) || ctx->uniform_buffer == nullptr) {
+        return;
+    }
+    const auto& range = *static_cast<const GfxRange*>(payload);
+    WGPUBindGroupEntry entry = WGPU_BIND_GROUP_ENTRY_INIT;
+    entry.binding = 0;
+    entry.buffer = ctx->uniform_buffer;
+    entry.offset = range.offset;
+    entry.size = sizeof(LineParams);
+    WGPUBindGroupDescriptor desc = WGPU_BIND_GROUP_DESCRIPTOR_INIT;
+    desc.layout = g.lineBgl;
+    desc.entryCount = 1;
+    desc.entries = &entry;
+    WGPUBindGroup bg = wgpuDeviceCreateBindGroup(g.device, &desc);
+    wgpuRenderPassEncoderSetPipeline(ctx->pass, scene_pipeline(ctx->layout, Kind::Line));
+    wgpuRenderPassEncoderSetBindGroup(ctx->pass, 0, bg, 0, nullptr);
+    wgpuRenderPassEncoderDraw(ctx->pass, 6, 1, 0, 0);
+    wgpuBindGroupRelease(bg);
+}
+
 void clear_draw(ModContext*, const GfxDrawContext* ctx, const void* payload, size_t size, void*) {
     const bool white = size == sizeof(bool) && *static_cast<const bool*>(payload);
     const Kind kind = white ? (ctx->uses_reversed_z ? Kind::ClearWhiteRev : Kind::ClearWhiteStd)
@@ -434,6 +524,27 @@ bool initialize(WGPUDevice device) {
     cutPld.bindGroupLayouts = &g.cutBgl;
     g.cutLayout = wgpuDeviceCreatePipelineLayout(device, &cutPld);
 
+    // Aim line: one uniform buffer, read by both stages.
+    WGPUShaderSourceWGSL lineWgsl = WGPU_SHADER_SOURCE_WGSL_INIT;
+    lineWgsl.code = sv(kLineShader);
+    WGPUShaderModuleDescriptor lineSmd = WGPU_SHADER_MODULE_DESCRIPTOR_INIT;
+    lineSmd.nextInChain = &lineWgsl.chain;
+    lineSmd.label = sv("Dusklight VR aim line");
+    g.lineModule = wgpuDeviceCreateShaderModule(device, &lineSmd);
+    WGPUBindGroupLayoutEntry lineEntry = WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
+    lineEntry.binding = 0;
+    lineEntry.visibility = WGPUShaderStage_Vertex | WGPUShaderStage_Fragment;
+    lineEntry.buffer.type = WGPUBufferBindingType_Uniform;
+    lineEntry.buffer.minBindingSize = sizeof(LineParams);
+    WGPUBindGroupLayoutDescriptor lineBgld = WGPU_BIND_GROUP_LAYOUT_DESCRIPTOR_INIT;
+    lineBgld.entryCount = 1;
+    lineBgld.entries = &lineEntry;
+    g.lineBgl = wgpuDeviceCreateBindGroupLayout(device, &lineBgld);
+    WGPUPipelineLayoutDescriptor linePld = WGPU_PIPELINE_LAYOUT_DESCRIPTOR_INIT;
+    linePld.bindGroupLayoutCount = 1;
+    linePld.bindGroupLayouts = &g.lineBgl;
+    g.lineLayout = wgpuDeviceCreatePipelineLayout(device, &linePld);
+
     GfxDeviceInfo info = GFX_DEVICE_INFO_INIT;
     if (svc_gfx->get_device_info(mod_ctx, &info) == MOD_OK) {
         g.reversedZ = info.uses_reversed_z;
@@ -451,20 +562,24 @@ bool initialize(WGPUDevice device) {
     GfxDrawTypeDesc cutDesc = GFX_DRAW_TYPE_DESC_INIT;
     cutDesc.label = "Dusklight VR tabletop cut";
     cutDesc.draw = cut_draw;
+    GfxDrawTypeDesc lineDesc = GFX_DRAW_TYPE_DESC_INIT;
+    lineDesc.label = "Dusklight VR aim line";
+    lineDesc.draw = line_draw;
     if (svc_gfx->register_draw_type(mod_ctx, &mirror, &g.mirrorDraw) != MOD_OK ||
         svc_gfx->register_draw_type(mod_ctx, &restore, &g.restoreDraw) != MOD_OK ||
         svc_gfx->register_draw_type(mod_ctx, &clear, &g.clearDraw) != MOD_OK ||
-        svc_gfx->register_draw_type(mod_ctx, &cutDesc, &g.cutDraw) != MOD_OK)
+        svc_gfx->register_draw_type(mod_ctx, &cutDesc, &g.cutDraw) != MOD_OK ||
+        svc_gfx->register_draw_type(mod_ctx, &lineDesc, &g.lineDraw) != MOD_OK)
     {
         mods::log::error("failed to register VR draw types");
         return false;
     }
     return g.module != nullptr && g.sampler != nullptr && g.bgl != nullptr && g.layout != nullptr &&
-           g.cutModule != nullptr && g.cutLayout != nullptr;
+           g.cutModule != nullptr && g.cutLayout != nullptr && g.lineModule != nullptr && g.lineLayout != nullptr;
 }
 
 void shutdown() {
-    for (GfxDrawTypeHandle* h : {&g.mirrorDraw, &g.restoreDraw, &g.clearDraw, &g.cutDraw}) {
+    for (GfxDrawTypeHandle* h : {&g.mirrorDraw, &g.restoreDraw, &g.clearDraw, &g.cutDraw, &g.lineDraw}) {
         if (*h != 0) {
             svc_gfx->unregister_draw_type(mod_ctx, *h);
             *h = 0;
@@ -490,6 +605,12 @@ void shutdown() {
     if (g.cutLayout) wgpuPipelineLayoutRelease(g.cutLayout);
     if (g.cutBgl) wgpuBindGroupLayoutRelease(g.cutBgl);
     if (g.cutModule) wgpuShaderModuleRelease(g.cutModule);
+    if (g.lineLayout) wgpuPipelineLayoutRelease(g.lineLayout);
+    if (g.lineBgl) wgpuBindGroupLayoutRelease(g.lineBgl);
+    if (g.lineModule) wgpuShaderModuleRelease(g.lineModule);
+    g.lineLayout = nullptr;
+    g.lineBgl = nullptr;
+    g.lineModule = nullptr;
     if (g.layout) wgpuPipelineLayoutRelease(g.layout);
     if (g.bgl) wgpuBindGroupLayoutRelease(g.bgl);
     if (g.sampler) wgpuSamplerRelease(g.sampler);
@@ -575,6 +696,17 @@ void push_cut(WGPUTextureView depth, const CutParams& params) {
         return;
     }
     svc_gfx->push_draw(mod_ctx, g.cutDraw, &p, sizeof(p));
+}
+
+void push_line(const LineParams& params) {
+    if (g.lineDraw == 0) {
+        return;
+    }
+    GfxRange range{};
+    if (svc_gfx->push_uniform(mod_ctx, &params, sizeof(params), &range) != MOD_OK) {
+        return;
+    }
+    svc_gfx->push_draw(mod_ctx, g.lineDraw, &range, sizeof(range));
 }
 
 } // namespace vr::gpu
