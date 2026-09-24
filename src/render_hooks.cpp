@@ -2,6 +2,7 @@
 #include "JSystem/J3DGraphAnimator/J3DModel.h"
 #include "JSystem/J3DGraphBase/J3DSys.h"
 #include "d/actor/d_a_alink.h"
+#include "d/actor/d_a_boomerang.h"
 #include "d/d_bg_s_lin_chk.h"
 #include "d/d_com_inf_game.h"
 #include "d/d_menu_window.h"
@@ -46,6 +47,8 @@
 DEFINE_HOOK_SYMBOL("aurora_begin_frame", bool(), AuroraBeginFrame);
 // Link's aiming reticle (a 2D sprite projected with the game camera); the aim line replaces it.
 DEFINE_HOOK_SYMBOL("daAlink_sight_c::draw", void(void*), SightDraw);
+// The boomerang's lock-on cursors (2D, placed for the game camera); drawn as 3D markers instead.
+DEFINE_HOOK_SYMBOL("daBoomerang_sight_c::draw", void(daBoomerang_sight_c*), BoomerangSightDraw);
 DEFINE_HOOK_SYMBOL("aurora_end_frame", void(), AuroraEndFrame);
 // Render worker, right after the frame is submitted (and presented). One-line wrapper; its callee is
 // the fallback in case the wrapper is inlined.
@@ -1265,9 +1268,25 @@ struct AimLine {
 };
 AimLine g_aim;
 
+// Lock-on markers: three arrows turning around a target, drawn in 3D where the game draws 2D cursors.
+struct Marker {
+    Vec3 pos;
+    float rgb[3];
+    float alpha;
+};
+std::vector<Marker> g_markers;          // drawn this frame
+std::vector<Marker> g_boomerangMarkers; // collected from the boomerang's cursors, drawn next frame
+
+void add_marker(std::vector<Marker>& list, const cXyz& pos, int r, int g, int b, float alpha = 1.0f) {
+    list.push_back({Vec3{pos.x, pos.y, pos.z},
+        {static_cast<float>(r) / 255.0f, static_cast<float>(g) / 255.0f, static_cast<float>(b) / 255.0f}, alpha});
+}
+
 // Game thread, once per frame before the eyes are painted.
 void update_aim() {
     g_aim.on = false;
+    g_markers.swap(g_boomerangMarkers);
+    g_boomerangMarkers.clear();
     daAlink_c* link = daAlink_getAlinkActorClass();
     static const bool testLine = std::getenv("DUSKLIGHT_VR_TEST_AIM") != nullptr; // dev: always show one
     if (testLine && link != nullptr) {
@@ -1279,6 +1298,7 @@ void update_aim() {
         g_aim.rgb[2] = 64.0f / 255.0f;
         g_aim.locked = false;
         g_aim.on = true;
+        add_marker(g_markers, cXyz(g_aim.to.x, g_aim.to.y, g_aim.to.z), 255, 220, 40);
         return;
     }
     if (link == nullptr || !link->mSight.getDrawFlg() || dComIfGp_checkPlayerStatus0(0, 0x200000)) {
@@ -1325,6 +1345,9 @@ void update_aim() {
     g_aim.to = Vec3{to->x, to->y, to->z};
     g_aim.locked = link->mSight.getLockFlg() != 0;
     g_aim.on = length(g_aim.to - g_aim.from) > 1.0f;
+    if (g_aim.locked) {
+        add_marker(g_markers, *to, 255, 220, 40); // clawshot / dominion rod target
+    }
 }
 
 // Game thread, per eye at FRAME_BEFORE_HUD.
@@ -1359,6 +1382,61 @@ void push_aim_line() {
     p.viewport[2] = 40.0f;                        // dash period (game units)
     p.viewport[3] = g_aim.locked ? 160.0f : 90.0f; // marching speed (game units per second)
     gpu::push_line(p);
+}
+
+// Game thread, per eye at FRAME_BEFORE_HUD.
+void push_markers() {
+    if (f.eye < 0 || g_markers.empty()) {
+        return;
+    }
+    static const int64_t start = now_ticks();
+    uint32_t w, h;
+    efb_size(w, h);
+    gpu::LineParams p;
+    const Mtx44f& m = f.clipFromWorld[f.eye];
+    for (int r = 0; r < 4; ++r) {
+        for (int c = 0; c < 4; ++c) {
+            p.clipFromWorld[c * 4 + r] = m.m[r][c];
+        }
+    }
+    p.end[3] = static_cast<float>(ticks_to_ms(now_ticks() - start) / 1000.0);
+    p.viewport[0] = static_cast<float>(w);
+    p.viewport[1] = static_cast<float>(h);
+    for (const Marker& mk : g_markers) {
+        p.start[0] = mk.pos.x;
+        p.start[1] = mk.pos.y;
+        p.start[2] = mk.pos.z;
+        p.start[3] = static_cast<float>(h) / 26.0f; // radius (pixels)
+        p.color[0] = mk.rgb[0];
+        p.color[1] = mk.rgb[1];
+        p.color[2] = mk.rgb[2];
+        p.color[3] = mk.alpha;
+        gpu::push_marker(p);
+    }
+}
+
+HookAction boomerang_sight_draw_pre(ModContext*, void* args, void*, void*) {
+    if (f.eye < 0) {
+        return HOOK_CONTINUE;
+    }
+    if (f.eye == 0) {
+        // Its slots: 5 = where it would fly (yellow), 0-4 = locked targets (orange; 0 red when it can't).
+        const daBoomerang_sight_c* sight = mods::arg<daBoomerang_sight_c*>(args, 0);
+        for (int i = 0; i < 6; ++i) {
+            if (sight->m_alpha[i] == 0) {
+                continue;
+            }
+            const float alpha = static_cast<float>(sight->m_alpha[i]) / 255.0f;
+            if (i == 5) {
+                add_marker(g_boomerangMarkers, sight->m_pos[i], 255, 220, 40, alpha);
+            } else if (i == 0 && sight->m_redSight) {
+                add_marker(g_boomerangMarkers, sight->m_pos[i], 235, 45, 40, alpha);
+            } else {
+                add_marker(g_boomerangMarkers, sight->m_pos[i], 255, 140, 30, alpha);
+            }
+        }
+    }
+    return HOOK_SKIP_ORIGINAL;
 }
 
 HookAction sight_draw_pre(ModContext*, void*, void*, void*) {
@@ -1397,6 +1475,7 @@ void run_stage_post(ModContext*, void* args, void*, void*) {
         }
     }
     push_aim_line(); // over the scene (and the table cut), under the HUD
+    push_markers();
     f.sceneNoHud = resolve_color();
     if (f.sceneNoHud == nullptr) {
         return;
@@ -1727,6 +1806,8 @@ bool install() {
         check<ClipperSetup>(mods::hook::add_pre<ClipperSetup>(clipper_setup_pre), "mDoLib_clipper::setup", false);
         check<GetWindowSize>(mods::hook::add_post<GetWindowSize>(window_size_post), "get_window_size", false);
         check<SightDraw>(mods::hook::add_pre<SightDraw>(sight_draw_pre), "daAlink_sight_c::draw", false);
+        check<BoomerangSightDraw>(mods::hook::add_pre<BoomerangSightDraw>(boomerang_sight_draw_pre),
+            "daBoomerang_sight_c::draw", false);
         check<ClipSphere>(mods::hook::add_pre<ClipSphere>(clip_pre), "J3DUClipper::clip (sphere)", false);
         check<ClipBox>(mods::hook::add_pre<ClipBox>(clip_pre), "J3DUClipper::clip (box)", false);
         check<DrawOpaSky>(mods::hook::add_pre<DrawOpaSky>(sky_pre), "dComIfGd_drawOpaListSky", false);

@@ -117,7 +117,9 @@ struct Line {
 
 struct LineOut {
     @builtin(position) pos: vec4f,
-    @location(0) side: f32,
+    // Across the ribbon: linear in screen space. With perspective correction, a ribbon spanning a
+    // large depth range (a long bow shot in stereo) skews and thins towards the far end.
+    @location(0) @interpolate(linear) side: f32,
     @location(1) along: f32,
     @location(2) t: f32,
 };
@@ -159,9 +161,49 @@ struct LineOut {
     let rgb = mix(line.color.rgb, vec3f(1.0), core * 0.3);
     return vec4f(rgb * a, a);
 }
+
+// Lock-on marker: three arrowheads turning around a world point, pointing in at it, with a glow.
+// Constant size on screen (like the game's 2D cursor). start.xyz = position, start.w = radius (px).
+struct MarkerOut {
+    @builtin(position) pos: vec4f,
+    @location(0) @interpolate(linear) local: vec2f,
+};
+
+@vertex fn vs_marker(@builtin(vertex_index) vi: u32) -> MarkerOut {
+    var corners = array<vec2f, 6>(vec2f(-1.0, -1.0), vec2f(1.0, -1.0), vec2f(-1.0, 1.0),
+        vec2f(-1.0, 1.0), vec2f(1.0, -1.0), vec2f(1.0, 1.0));
+    let k = corners[vi];
+    let c = line.clip_from_world * vec4f(line.start.xyz, 1.0);
+    let w = max(c.w, 1e-3);
+    var o: MarkerOut;
+    o.pos = vec4f(c.xy + k * line.start.w * 2.0 / line.viewport.xy * w, w * 0.5, w);
+    o.local = k;
+    return o;
+}
+
+fn arrow_dist(p: vec2f, ang: f32) -> f32 {
+    let dir = vec2f(cos(ang), sin(ang));
+    let u = dot(p, dir);
+    let v = dot(p, vec2f(-dir.y, dir.x));
+    let halfw = max(u - 0.42, 0.0) / 0.38 * 0.24;
+    return max(max(0.42 - u, u - 0.8), abs(v) - halfw);
+}
+
+@fragment fn fs_marker(in: MarkerOut) -> @location(0) vec4f {
+    let t = line.end.w;
+    let p = in.local * (1.0 + 0.08 * sin(t * 6.0));
+    let spin = t * 2.2;
+    let d = min(arrow_dist(p, spin), min(arrow_dist(p, spin + 2.0944), arrow_dist(p, spin + 4.1888)));
+    let aa = max(fwidth(d), 1e-4);
+    let core = 1.0 - smoothstep(-aa, aa, d);
+    let glow = exp(-max(d, 0.0) * 14.0) * 0.45;
+    let a = clamp(core + glow * (1.0 - core), 0.0, 1.0) * line.color.a;
+    let rgb = mix(line.color.rgb, vec3f(1.0), core * 0.25);
+    return vec4f(rgb * a, a);
+}
 )";
 
-enum class Kind { Blit, BlitAlpha, Key, Combine, CombineOver, ClearBlackRev, ClearBlackStd, ClearWhiteRev, ClearWhiteStd, Cut, Line };
+enum class Kind { Blit, BlitAlpha, Key, Combine, CombineOver, ClearBlackRev, ClearBlackStd, ClearWhiteRev, ClearWhiteStd, Cut, Line, Marker };
 
 struct State {
     WGPUDevice device = nullptr;
@@ -219,6 +261,8 @@ const char* entry_for(Kind k) {
         return "fs_cut";
     case Kind::Line:
         return "fs_line";
+    case Kind::Marker:
+        return "fs_marker";
     case Kind::Combine:
     case Kind::CombineOver:
         return "fs_combine";
@@ -237,7 +281,7 @@ const char* entry_for(Kind k) {
 WGPURenderPipeline create_pipeline(const WGPUColorTargetState* targets, uint32_t targetCount,
     WGPUTextureFormat depthFormat, uint32_t samples, Kind kind) {
     const bool cut = kind == Kind::Cut;
-    const bool line = kind == Kind::Line;
+    const bool line = kind == Kind::Line || kind == Kind::Marker;
     WGPUShaderModule module = cut ? g.cutModule : (line ? g.lineModule : g.module);
     WGPUFragmentState fs = WGPU_FRAGMENT_STATE_INIT;
     fs.module = module;
@@ -256,7 +300,7 @@ WGPURenderPipeline create_pipeline(const WGPUColorTargetState* targets, uint32_t
     desc.label = sv("Dusklight VR composite");
     desc.layout = cut ? g.cutLayout : (line ? g.lineLayout : g.layout);
     desc.vertex.module = module;
-    desc.vertex.entryPoint = sv(line ? "vs_line" : "vs_main");
+    desc.vertex.entryPoint = sv(kind == Kind::Line ? "vs_line" : (kind == Kind::Marker ? "vs_marker" : "vs_main"));
     desc.primitive.topology = WGPUPrimitiveTopology_TriangleList;
     desc.depthStencil = depthFormat != WGPUTextureFormat_Undefined ? &ds : nullptr;
     desc.multisample.count = samples;
@@ -290,7 +334,8 @@ WGPURenderPipeline scene_pipeline(const GfxRenderTargetLayout& layout, Kind kind
     mask.color = {WGPUBlendOperation_Add, WGPUBlendFactor_Zero, WGPUBlendFactor_SrcAlpha};
     mask.alpha = {WGPUBlendOperation_Add, WGPUBlendFactor_One, WGPUBlendFactor_Zero};
     const WGPUBlendState* blend =
-        (kind == Kind::CombineOver || kind == Kind::Line) ? &over : (kind == Kind::Cut ? &mask : nullptr);
+        (kind == Kind::CombineOver || kind == Kind::Line || kind == Kind::Marker) ? &over
+                                                                                : (kind == Kind::Cut ? &mask : nullptr);
     WGPUColorTargetState targets[GFX_MAX_COLOR_ATTACHMENTS];
     const uint32_t count = gfx_init_color_target_states(&layout, targets, blend, WGPUColorWriteMask_All);
     if (!g.formatLogged) {
@@ -417,11 +462,17 @@ void cut_draw(ModContext*, const GfxDrawContext* ctx, const void* payload, size_
     wgpuBindGroupRelease(bg);
 }
 
+struct LinePayload {
+    GfxRange range;
+    Kind kind;
+};
+
 void line_draw(ModContext*, const GfxDrawContext* ctx, const void* payload, size_t size, void*) {
-    if (size != sizeof(GfxRange) || ctx->uniform_buffer == nullptr) {
+    if (size != sizeof(LinePayload) || ctx->uniform_buffer == nullptr) {
         return;
     }
-    const auto& range = *static_cast<const GfxRange*>(payload);
+    const auto& p = *static_cast<const LinePayload*>(payload);
+    const GfxRange& range = p.range;
     WGPUBindGroupEntry entry = WGPU_BIND_GROUP_ENTRY_INIT;
     entry.binding = 0;
     entry.buffer = ctx->uniform_buffer;
@@ -432,7 +483,7 @@ void line_draw(ModContext*, const GfxDrawContext* ctx, const void* payload, size
     desc.entryCount = 1;
     desc.entries = &entry;
     WGPUBindGroup bg = wgpuDeviceCreateBindGroup(g.device, &desc);
-    wgpuRenderPassEncoderSetPipeline(ctx->pass, scene_pipeline(ctx->layout, Kind::Line));
+    wgpuRenderPassEncoderSetPipeline(ctx->pass, scene_pipeline(ctx->layout, p.kind));
     wgpuRenderPassEncoderSetBindGroup(ctx->pass, 0, bg, 0, nullptr);
     wgpuRenderPassEncoderDraw(ctx->pass, 6, 1, 0, 0);
     wgpuBindGroupRelease(bg);
@@ -698,15 +749,21 @@ void push_cut(WGPUTextureView depth, const CutParams& params) {
     svc_gfx->push_draw(mod_ctx, g.cutDraw, &p, sizeof(p));
 }
 
-void push_line(const LineParams& params) {
+namespace {
+void push_line_kind(const LineParams& params, Kind kind) {
     if (g.lineDraw == 0) {
         return;
     }
-    GfxRange range{};
-    if (svc_gfx->push_uniform(mod_ctx, &params, sizeof(params), &range) != MOD_OK) {
+    LinePayload payload{{}, kind};
+    if (svc_gfx->push_uniform(mod_ctx, &params, sizeof(params), &payload.range) != MOD_OK) {
         return;
     }
-    svc_gfx->push_draw(mod_ctx, g.lineDraw, &range, sizeof(range));
+    svc_gfx->push_draw(mod_ctx, g.lineDraw, &payload, sizeof(payload));
 }
+} // namespace
+
+void push_line(const LineParams& params) { push_line_kind(params, Kind::Line); }
+
+void push_marker(const LineParams& params) { push_line_kind(params, Kind::Marker); }
 
 } // namespace vr::gpu

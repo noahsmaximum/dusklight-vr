@@ -63,5 +63,7 @@ void push_clear(bool white = false);
 void push_cut(WGPUTextureView depth, const CutParams& params);
 // Game thread: draw an aim line into the current EFB pass.
 void push_line(const LineParams& params);
+// Game thread: draw a lock-on marker (start = position, start[3] = radius in pixels; end[3] = time).
+void push_marker(const LineParams& params);
 
 } // namespace vr::gpu
