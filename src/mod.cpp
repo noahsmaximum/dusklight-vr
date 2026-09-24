@@ -108,6 +108,9 @@ ModResult build_panel(ModContext*, UiElementHandle pane, void*, ModError*) {
     add_number(pane, "Visible depth below table", g_vars.tableDepthCm, 0, 500, 5, " cm");
     add_toggle(pane, "See-through background (passthrough)", g_vars.tablePassthrough);
     add_toggle(pane, "Turn with the game camera", g_vars.tableFollowYaw);
+    add_toggle(pane, "X-ray: keep Link visible", g_vars.tableXray);
+    add_number(pane, "X-ray radius (game world)", g_vars.tableXrayRadius, 50, 2000, 25, " cm");
+    add_number(pane, "Fade objects near your eyes", g_vars.tableFadeNearCm, 0, 200, 5, " cm");
     {
         UiControlDesc c = UI_CONTROL_DESC_INIT;
         c.kind = UI_CONTROL_COLOR;

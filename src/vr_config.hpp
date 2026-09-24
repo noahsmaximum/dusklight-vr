@@ -48,6 +48,9 @@ struct Config {
     float tableOffsetX = 0.0f;          // table centre moved right (+) / left (-)
     float tableYawDeg = 0.0f;           // diorama turned about the table centre (counter-clockwise +)
     uint32_t tableKeyColor = 0x000000;  // background when the runtime is opaque (0xRRGGBB)
+    bool tableXray = true;              // keep Link visible: cut away what stands between you and him
+    float tableXrayRadius = 200.0f;     // x-ray radius around Link, game units (~cm of game world)
+    float tableFadeNear = 0.2f;         // geometry closer to your eyes than this fades out (metres, 0 = off)
     bool showDuskUi = true;             // Dusklight's own UI (settings, mod manager) on a panel in the headset
     int hookLevel = 4;                  // bring-up switch: how much of the hook set to install (see render_hooks.cpp)
 

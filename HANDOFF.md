@@ -161,24 +161,40 @@ How it works (see README "How it works" for the one-line version):
 **Ideas not done yet:** roof/ceiling cut in interiors (a height cap), a table rim or base, grab-to-move
 the table with controllers, a sphere-based clip test instead of culling nothing.
 
-## Next feature: tabletop x-ray (not started, 2026-09-24)
+## Tabletop x-ray (in progress, branch `tabletop-xray`, 2026-09-24)
 
-User's spec: in **tabletop mode**, Link stays visible at all times. A circle around him has 100%
-clear vision (whatever is between the viewer and Link is removed/see-through there), and objects
-near the camera (the viewer's head) are faded.
+User's spec: in **tabletop mode** Link stays visible at all times: a **long cylinder of clear view from
+the camera (eye) to Link** (whatever is inside it, in front of him, is removed), and objects near the
+viewer's head fade out.
 
-Existing pieces to build on (nothing decided yet):
-- Link's position: `dComIfGp_getPlayer(0)->current.pos` (already used by `table_transform`).
-- Per-eye depth snapshot + full-screen pass at `FRAME_BEFORE_HUD`: `gpu::push_cut` / `CutParams`
-  (`worldFromClip`, table anchor/radius, floor) already turns depth into premultiplied alpha for the
-  table cut. An x-ray circle (Link projected per eye, screen radius) and a near-camera fade could be
-  more terms in that same shader.
-- Catch: a single-layer framebuffer has already overwritten whatever an occluder hides, so fading
-  alpha alone reveals the passthrough/background, not Link. Showing Link *through* occluders needs
-  either skipping the occluders (e.g. the `J3DUClipper::clip` hooks already installed for tabletop
-  could cull objects intersecting the eye→Link cone) or drawing Link again on top.
-- Test harness: `tools/run_test.ps1` (simulateHmd, side-by-side) with `-Cvars ...mode=3` for
-  tabletop; Quest: `tools/quest_bench.sh` / docs/android.md device loop.
+Design (implemented, not yet working): per-fragment cut-out inside Aurora's own GX shaders, because
+an occluder has already overwritten Link by the time the frame is done (a post pass can only reveal
+the background). No Aurora/Dusklight changes:
+- `src/xray.cpp`: intercepts `wgpuDeviceCreateShaderModule` (Windows: import-table patch of
+  `webgpu_dawn.dll`; Android: symbol replace hook). GX shaders (label "GX Shader") whose fog is
+  `GX_FOG_ORTHO_REVEXP2` (unused by the game) get the fog colour blend replaced by the cut-out WGSL
+  (reads per-eye data from `abuf` = Aurora's storage buffer, reconstructs world pos from
+  `in.pos` + depth, cylinder test + near fade, 4x4 ordered-dither `discard`).
+- `render_hooks.cpp` `begin_xray()`: per tabletop eye, `push_storage` 8 x vec4 (worldFromClip, eye
+  pos, Link pos, target size, radius/taper/fade/margin) and `GXSetFog(ORTHO_REVEXP2, ...)` whose
+  a/c carry the data offset (a = offset16 >> 10, c = 2048 + low 10 bits, exact in the fog regs).
+  `fog_pre` rewrites every game fog call during the eye's 3D phase; `end_xray()` at
+  `FRAME_BEFORE_HUD` sets fog NONE for the 2D phase.
+- Config: `tableXray` (on), `tableXrayRadius` (200 game units), `tableFadeNearCm` (20); panel
+  entries under Tabletop.
+- Debug: env `DUSKLIGHT_VR_XRAY_DEBUG=1` tints would-be-cut pixels magenta instead of discarding;
+  `=1d` paints the decoded data (r = slot/64, g = target width/1216, b = radius/200). A temporary
+  "xray eye N" log line in `begin_xray` (remove when done).
+
+**Where it stands:** shaders are patched ("Tabletop x-ray: GX shaders patched"), CPU side logs
+sane values (eye 0 data at storage offset 0, eye 1 at 256 bytes; eyes 6.4 cm apart). But the `1d`
+view shows the **left eye reading slot 64 (eye 1's) with zero data, and the right eye reading
+wrong values** (g = 0) -> the fog a/c each draw sees don't match what was set for that eye, or
+the storage bytes aren't where the offset says. Next: check when GX fog register writes reach
+`g_gxState` relative to draws (FIFO / command processor timing, uniform caching) and whether
+`push_storage` data is valid at draw time (e.g. write a known constant and paint it); then tune
+the cylinder (currently constant radius, closes over radius/2 just in front of Link, 30-unit
+margin) and check the floor in front of Link isn't holed.
 
 ## Cross-platform layout (since the Android work)
 
@@ -195,7 +211,7 @@ Existing pieces to build on (nothing decided yet):
 
 1. State: v0.3.1 released (Windows + Quest 3); `main` == `vr-shared`. Work on a feature branch off
    `main` (e.g. `tabletop-xray`), PR/merge back.
-2. Next feature: tabletop x-ray (section above).
+2. In progress: tabletop x-ray on branch `tabletop-xray` (section above).
 3. Windows test: `tools/run_test.ps1` (desktop simulation; `-Headset` for Virtual Desktop). Quest:
    `docs/android.md` device loop; SDK/adb on `F:\Android\sdk`, ROM at
    `/storage/emulated/0/Download/tp-linkle.iso`, app `dev.twilitrealm.dusk.vr`.

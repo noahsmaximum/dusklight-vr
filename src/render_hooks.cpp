@@ -14,6 +14,7 @@
 #include "vr_config.hpp"
 #include "vr_math.hpp"
 #include "xr_runtime.hpp"
+#include "xray.hpp"
 
 #include "mods/svc/gfx.h"
 #include "mods/svc/hook.hpp"
@@ -144,6 +145,8 @@ struct Frame {
     xr::QuadLayer quad;
     bool tabletop = false; // diorama camera + cut applied this frame
     std::array<gpu::CutParams, 2> cut{};
+    bool xrayOn = false;   // the 3D phase of a tabletop eye: every fog call becomes the x-ray fog
+    xray::FogArgs xrayFog{};
     // The current eye's projection and the symmetric fovy/aspect written into its view_class.
     Mtx44f eyeProj;
     f32 eyeFovy = 0.0f, eyeAspect = 0.0f;
@@ -562,6 +565,60 @@ gpu::CutParams cut_params(const view_class& v) {
     p.params[2] = 0.02f * s;                                     // floor fade (2 cm)
     p.params[3] = reversed ? 0.0f : 1.0f;                        // cleared depth
     return p;
+}
+
+void efb_size(uint32_t& w, uint32_t& h);
+
+// Tabletop x-ray for the eye apply_eye just set up: uploads its data and switches the GX fog to the
+// x-ray fog type for the eye's 3D phase (fog_pre keeps it there; run_stage_post ends it).
+void begin_xray(const view_class& v, const gpu::CutParams& cut) {
+    f.xrayOn = false;
+    const auto& cfg = config();
+    const fopAc_ac_c* player = dComIfGp_getPlayer(0);
+    if (!xray::available() || SetFog::g_orig == nullptr || player == nullptr ||
+        (!cfg.tableXray && cfg.tableFadeNear <= 0.0f))
+    {
+        return;
+    }
+    xray::EyeParams p{};
+    std::memcpy(p.worldFromClip, cut.worldFromClip, sizeof(p.worldFromClip));
+    const Mtx34 worldFromEye = inverse_affine(load(v.viewMtx));
+    p.eye[0] = worldFromEye.m[0][3];
+    p.eye[1] = worldFromEye.m[1][3];
+    p.eye[2] = worldFromEye.m[2][3];
+    p.target[0] = player->current.pos.x;
+    p.target[1] = player->current.pos.y + 75.0f; // about half of Link's height
+    p.target[2] = player->current.pos.z;
+    uint32_t w, h;
+    efb_size(w, h);
+    p.targetWidth = static_cast<float>(w);
+    p.targetHeight = static_cast<float>(h);
+    p.radius = cfg.tableXray ? cfg.tableXrayRadius : 0.0f;
+    p.taper = cfg.tableXrayRadius * 0.5f;
+    p.margin = 30.0f;
+    const float fade = cfg.tableFadeNear * cfg.tableUnitsPerMeter;
+    p.fadeFar = fade > 0.0f ? fade : -1.0f;
+    p.fadeNear = fade > 0.0f ? fade * 0.5f : -2.0f;
+    if (!xray::push_eye(p, f.xrayFog)) {
+        return;
+    }
+    static int logged = 0;
+    if (logged < 6) {
+        ++logged;
+        mods::log::info("xray eye {}: eye ({:.0f} {:.0f} {:.0f}) link ({:.0f} {:.0f} {:.0f}) size {}x{} fog {} {} {}",
+            f.eye, p.eye[0], p.eye[1], p.eye[2], p.target[0], p.target[1], p.target[2], w, h, f.xrayFog.startZ,
+            f.xrayFog.farZ, f.xrayFog.endZ);
+    }
+    f.xrayOn = true;
+    SetFog::g_orig(static_cast<GXFogType>(xray::kFogType), f.xrayFog.startZ, f.xrayFog.endZ, f.xrayFog.nearZ,
+        f.xrayFog.farZ, GXColor{0, 0, 0, 0});
+}
+
+void end_xray() {
+    if (f.xrayOn) {
+        f.xrayOn = false;
+        SetFog::g_orig(GX_FOG_NONE, 0.0f, 1.0f, 0.1f, 1.0f, GXColor{0, 0, 0, 0});
+    }
 }
 
 bool tabletop_culling_off() {
@@ -1020,11 +1077,13 @@ void painter_replace(ModContext*, void*, void* retval, void*) {
             apply_eye(cam->view, backup, trackingFromWorld, unitsPerMeter, eye);
             if (f.tabletop) {
                 f.cut[eye] = cut_params(cam->view);
+                begin_xray(cam->view, f.cut[eye]);
             }
             run_interp_callbacks(cam->view);
         }
         run();
-        end_hud_capture(); // in case the painter skipped the HUD stage
+        end_xray();        // in case the painter skipped the HUD stage
+        end_hud_capture();
         f.scene[eye] = resolve_color();
     }
     f.eye = -1;
@@ -1061,6 +1120,7 @@ void run_stage_post(ModContext*, void* args, void*, void*) {
     // scene, then let the 2D phase draw into the main framebuffer over black (first eye) or white
     // (second eye); the pair gives the compositor exact alpha for the headset's quad layer. This
     // stays on the EFB (not an offscreen pass) so the game's 2D viewport scaling applies.
+    end_xray(); // the 2D phase is never cut
     if (f.tabletop) {
         // Fade out everything beyond the table (and the empty background) using this eye's depth.
         GfxResolveDesc desc = GFX_RESOLVE_DESC_INIT;
@@ -1130,8 +1190,18 @@ HookAction sky_pre(ModContext*, void*, void*, void*) {
 HookAction fog_pre(ModContext*, void* args, void*, void*) {
     // Fog is computed from the distance to the eye, which in tabletop is thousands of game units
     // away from everything (the whole diorama would fog over).
+    // During the x-ray phase every fog call is turned into the x-ray fog instead (see xray.hpp).
     if (f.eye >= 0 && f.tabletop) {
-        mods::arg_ref<GXFogType>(args, 0) = GX_FOG_NONE;
+        if (f.xrayOn) {
+            mods::arg_ref<GXFogType>(args, 0) = static_cast<GXFogType>(xray::kFogType);
+            mods::arg_ref<f32>(args, 1) = f.xrayFog.startZ;
+            mods::arg_ref<f32>(args, 2) = f.xrayFog.endZ;
+            mods::arg_ref<f32>(args, 3) = f.xrayFog.nearZ;
+            mods::arg_ref<f32>(args, 4) = f.xrayFog.farZ;
+            mods::arg_ref<GXColor>(args, 5) = GXColor{0, 0, 0, 0};
+        } else {
+            mods::arg_ref<GXFogType>(args, 0) = GX_FOG_NONE;
+        }
     }
     return HOOK_CONTINUE;
 }
@@ -1402,7 +1472,11 @@ bool install() {
         check<ClipBox>(mods::hook::add_pre<ClipBox>(clip_pre), "J3DUClipper::clip (box)", false);
         check<DrawOpaSky>(mods::hook::add_pre<DrawOpaSky>(sky_pre), "dComIfGd_drawOpaListSky", false);
         check<DrawXluSky>(mods::hook::add_pre<DrawXluSky>(sky_pre), "dComIfGd_drawXluListSky", false);
-        check<SetFog>(mods::hook::add_pre<SetFog>(fog_pre), "GXSetFog", false);
+        const ModResult fog = mods::hook::add_pre<SetFog>(fog_pre);
+        check<SetFog>(fog, "GXSetFog", false);
+        if (fog == MOD_OK) {
+            xray::install(); // needs the fog hook to select its shaders
+        }
         check<LightPerspective>(
             mods::hook::add_post<LightPerspective>(light_perspective_post), "C_MTXLightPerspective", false);
     }
@@ -1499,6 +1573,7 @@ bool install() {
 }
 
 void uninstall() {
+    xray::uninstall();
     if (g_efbWidth.load() != 0) {
         g_efbWidth.store(0);
         g_efbHeight.store(0);

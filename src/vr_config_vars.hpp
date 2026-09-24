@@ -30,6 +30,9 @@ struct ConfigVars {
     ConfigVarHandle tableKeyColor = 0; // string RRGGBB
     ConfigVarHandle tableOffsetXCm = 0;
     ConfigVarHandle tableYawDeg = 0;
+    ConfigVarHandle tableXray = 0;
+    ConfigVarHandle tableXrayRadius = 0; // game units
+    ConfigVarHandle tableFadeNearCm = 0;
     ConfigVarHandle showDuskUi = 0;
     ConfigVarHandle hookLevel = 0;    // bring-up: how many layers of hooks to install
     ConfigVarHandle mirrorHud = 0;
