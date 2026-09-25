@@ -112,3 +112,9 @@ side by side on the desktop.
 
 - Screen-space post effects are computed per eye; depth of field is disabled by default for comfort,
   motion blur is always off in stereo (it would blend in the other eye's frame).
+
+  ## AI disclosure
+
+This mod was written/assisted with Claude Code. I, NoahsMaximum, have been directing, reviewing and play-testing every version.
+Please [open an issue](https://github.com/noahsmaximum/dusklight-archipelago/issues) if you find anything.
+
