@@ -265,7 +265,7 @@ Linux machine to test on.
 2. Quest: the 1.0 features are Windows-tested only; check them on the headset (x-ray cost with a
    `discard` in every tabletop draw).
 3. Next release: ships the new icon/banner (section above). Linux: see the Linux section.
-3. Windows test: `tools/run_test.ps1` (desktop simulation; `-Headset` for Virtual Desktop). Quest:
+4. Windows test: `tools/run_test.ps1` (desktop simulation; `-Headset` for Virtual Desktop). Quest:
    `docs/android.md` device loop; SDK/adb on `F:\Android\sdk`, ROM at
    `/storage/emulated/0/Download/tp-linkle.iso`, app `dev.twilitrealm.dusk.vr`.
-4. Still unconfirmed: the Ordon Village river in the Windows headset; Quest pause/resume.
+5. Still unconfirmed: the Ordon Village river in the Windows headset; Quest pause/resume.
