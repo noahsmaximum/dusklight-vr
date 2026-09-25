@@ -1,12 +1,12 @@
 # Dusklight VR — handoff
 
 Repo: https://github.com/noahsmaximum/dusklight-vr (local: `C:\Users\Noah\Projects\dusklight-vr`)
-Latest release: **v1.0.0** (Windows + Quest 3; published by CI on tag push, the Quest APK is built by
+Latest release: **v1.0.1** (Windows + Quest 3; published by CI on tag push, the Quest APK is built by
 the manual "Android VR APK" workflow from the tag and attached with `gh release upload`).
 
 ## Status
 
-`main` is at v1.0.0 (the 1.0 work from `tabletop-xray` merged); start new work on a branch off `main`.
+`main` is at v1.0.1 (1.0 work from `tabletop-xray` merged, plus the icon/banner); start new work on a branch off `main`.
 
 Windows — user-tested in the headset (v0.3.0 re-checked through Virtual Desktop):
 
@@ -245,8 +245,7 @@ look, Quest performance (every tabletop draw now has a `discard`).
 - `res/icon.png` (256x256) and `res/banner.png` (1280 wide) are packaged into the `.dusk` through
   `add_mod(... RES_DIR res)`; Dusklight's manifest loader reads those paths by default (Mods window
   icon, detail banner). Full-size sources: `docs/images/banner.png` (README header), `logo.png`.
-- On `main` after v1.0.0: the published v1.0.0 `.dusk` does not have them yet; they ship with the next
-  release (bump `MOD_VERSION`, tag, run the APK workflow, attach the APK).
+- Shipped in v1.0.1.
 
 ## Linux (not started)
 
@@ -259,12 +258,12 @@ Linux machine to test on.
 
 ## Picking this up again
 
-1. State: v1.0.0 released (Windows + Quest 3) from `main`: tabletop x-ray, table HUD, quick wheel,
+1. State: v1.0.1 released (Windows + Quest 3) from `main`: tabletop x-ray, table HUD, quick wheel,
    aim lines and lock-on markers, Hawkeye screen, third-person aiming, manual camera, black fades,
    stereo shadows (sections above). Work on a feature branch off `main`, PR/merge back.
 2. Quest: the 1.0 features are Windows-tested only; check them on the headset (x-ray cost with a
    `discard` in every tabletop draw).
-3. Next release: ships the new icon/banner (section above). Linux: see the Linux section.
+3. Linux: see the Linux section.
 4. Windows test: `tools/run_test.ps1` (desktop simulation; `-Headset` for Virtual Desktop). Quest:
    `docs/android.md` device loop; SDK/adb on `F:\Android\sdk`, ROM at
    `/storage/emulated/0/Download/tp-linkle.iso`, app `dev.twilitrealm.dusk.vr`.

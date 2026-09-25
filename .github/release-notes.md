@@ -11,6 +11,10 @@
 2. Copy your Twilight Princess (USA) disc image to the headset (e.g. its `Download` folder).
 3. Launch **Dusklight VR** from the library (Unknown Sources). Dusklight's launch menu shows in the headset: select your disc image there and start the game. It's remembered for later launches.
 
+## What's new in 1.0.1
+
+- New mod icon and banner in Dusklight's Mods window
+
 ## What's new in 1.0
 
 - **Tabletop x-ray**: when the level hides Link, a cylinder of clear view opens from your eyes to him (roofs, walls, trees). The ground he stands on, Link himself, NPCs and enemies are never cut; scenery right in front of your eyes fades out
