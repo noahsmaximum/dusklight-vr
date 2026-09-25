@@ -1,3 +1,5 @@
+![Dusklight VR: Twilight Princess in 3rd-person VR](docs/images/banner.png)
+
 # Dusklight VR
 
 OpenXR VR for [Dusklight](https://github.com/TwilitRealm/dusklight) 2.0 as a self-contained native mod

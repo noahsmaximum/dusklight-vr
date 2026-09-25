@@ -240,6 +240,23 @@ look, Quest performance (every tabletop draw now has a `discard`).
 - `tools/run_test.ps1` sets `DUSKLIGHT_VR_NO_XR=1`, which now skips only the OpenXR instance, so
   simulation still exercises the whole GPU copy path.
 
+## Branding (after v1.0.0)
+
+- `res/icon.png` (256x256) and `res/banner.png` (1280 wide) are packaged into the `.dusk` through
+  `add_mod(... RES_DIR res)`; Dusklight's manifest loader reads those paths by default (Mods window
+  icon, detail banner). Full-size sources: `docs/images/banner.png` (README header), `logo.png`.
+- On `main` after v1.0.0: the published v1.0.0 `.dusk` does not have them yet; they ship with the next
+  release (bump `MOD_VERSION`, tag, run the APK workflow, attach the APK).
+
+## Linux (not started)
+
+Not supported: CMake stops on anything but Windows/Android. Plan discussed with the user: a Linux
+"VR edition" AppImage like the Quest APK (the patch script enables Dawn's shared-texture features and
+exports Aurora's symbols), a desktop-Vulkan variant of `interop_vulkan.cpp` (opaque-fd external
+memory instead of AHardwareBuffer; sync-fd or opaque-fd semaphores), a `linux-x86_64` CI target merged
+into the `.dusk`, and testing through WiVRn/ALVR or SteamVR on Linux. Waiting on the user having a
+Linux machine to test on.
+
 ## Picking this up again
 
 1. State: v1.0.0 released (Windows + Quest 3) from `main`: tabletop x-ray, table HUD, quick wheel,
@@ -247,6 +264,7 @@ look, Quest performance (every tabletop draw now has a `discard`).
    stereo shadows (sections above). Work on a feature branch off `main`, PR/merge back.
 2. Quest: the 1.0 features are Windows-tested only; check them on the headset (x-ray cost with a
    `discard` in every tabletop draw).
+3. Next release: ships the new icon/banner (section above). Linux: see the Linux section.
 3. Windows test: `tools/run_test.ps1` (desktop simulation; `-Headset` for Virtual Desktop). Quest:
    `docs/android.md` device loop; SDK/adb on `F:\Android\sdk`, ROM at
    `/storage/emulated/0/Download/tp-linkle.iso`, app `dev.twilitrealm.dusk.vr`.
