@@ -259,7 +259,8 @@ D3D12 path on Windows. CI builds `linux-x86_64` and `linux-aarch64`. `VR_STANDAL
 Dev loop on this machine: WSL Ubuntu 24.04 (`/opt/build/vr` build dir, extracted AppImages under
 `/opt/dl`), llvmpipe made acceptable to Aurora by `tools/linux/fake_gpu_layer.c`. Verified there:
 mod loads on stock 2.0.3, hooks install, stereo simulation renders, copy self-test reads the scene
-through Dawn's queue. Next: real OpenXR session against Monado's simulated HMD, then the Frame.
+through Dawn's queue, and a real OpenXR session on Monado's simulated HMD shows the stereo scene and
+HUD. Next: the Steam Frame itself (user test), SteamVR on Linux.
 
 ## Picking this up again
 

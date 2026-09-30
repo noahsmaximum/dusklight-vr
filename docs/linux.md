@@ -66,14 +66,28 @@ OpenXR session.
 
 ## Verified so far
 
-- Official Dusklight 2.0.3 x86_64 AppImage under WSLg (llvmpipe): the mod loads, every hook installs,
-  the interop reaches Dawn's Vulkan device, stereo simulation renders Ordon, and the copy self-test
-  reads the scene back through Dawn's queue.
-- Every symbol the mod imports is exported by the official 2.0.3 x86_64 and arm64 binaries.
+- Every symbol the mod imports is exported by the official 2.0.3 x86_64 and arm64 binaries; CI
+  builds both Linux libraries and merges them into the `.dusk`.
+- Official Dusklight 2.0.3 x86_64 AppImage under WSLg (llvmpipe), desktop simulation: the mod loads,
+  every hook installs, the interop reaches Dawn's Vulkan device, stereo renders Ordon, and the copy
+  self-test reads the scene back through Dawn's queue.
+- **Real OpenXR session** on Monado's simulated HMD (Ubuntu 24.04's `monado-service`, compositor in a
+  WSLg window): session and swapchains on Dawn's device (Monado's required device extensions were
+  all there), frames delivered, stereo scene and HUD layer correct in both eyes:
+
+  ![Monado simulated HMD showing Dusklight VR](images/linux-monado.png)
+
+## WSL notes
+
+- Monado needs a pollable stdin (`tail -f /dev/null | monado-service`) and `XRT_COMPOSITOR_FORCE_XCB=1`
+  for a window; `XR_RUNTIME_JSON=/usr/share/openxr/1/openxr_monado.json` for the game.
+- Under llvmpipe the game is slow enough that a stock race shows up now and then: the main thread
+  blocks on the JKR heap lock during a stage load while the audio task thread (`JASTaskThread`) sits
+  idle holding it. Not the mod (it touches neither), and unseen at real speed; restart the run.
 
 ## Not yet verified
 
-- A real OpenXR session (Monado simulated HMD in WSL, then SteamVR).
 - Anything on a Steam Frame: SteamVR's Vulkan device-extension requirements against what Dawn
-  enables, performance on the Snapdragon 8 Gen 3, launching the AppImage from the Frame's library,
-  controller input.
+  enables (Monado's were met), performance on the Snapdragon 8 Gen 3, launching the AppImage from
+  the Frame's library into VR, controller input, passthrough for tabletop.
+- SteamVR on a Linux PC.
