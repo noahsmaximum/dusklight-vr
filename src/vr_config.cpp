@@ -14,7 +14,7 @@ namespace {
 Config g_config;
 
 // Standalone headsets render the game twice on a mobile GPU: 60% holds 36 fps in stereo on a Quest 3.
-#ifdef __ANDROID__
+#if VR_STANDALONE
 constexpr int64_t kDefaultRenderScale = 60;
 constexpr int64_t kPerformanceRenderScale = 60;
 #else

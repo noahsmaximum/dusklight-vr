@@ -231,8 +231,8 @@ look, Quest performance (every tabletop draw now has a `discard`).
 
 ## Cross-platform layout (since the Android work)
 
-- `src/interop.hpp` is the graphics-handoff interface; `interop_d3d12.cpp` (Windows) and
-  `interop_vulkan.cpp` (Android) implement it, chosen by CMake. `xr_runtime.cpp` is API-agnostic.
+- `src/interop.hpp` is the graphics-handoff interface; `interop_d3d12.cpp` (Windows),
+  `interop_vulkan.cpp` (Android) and `interop_linux.cpp` (Linux) implement it, chosen by CMake. `xr_runtime.cpp` is API-agnostic.
 - Frame delivery hooks `aurora::gfx::after_submit` on every platform; the Windows import-table hook
   on `wgpuQueueSubmit` is only a fallback.
 - Android extras: `src/android_loader.cpp` (OpenXR loader init via JNI),
@@ -247,14 +247,19 @@ look, Quest performance (every tabletop draw now has a `discard`).
   icon, detail banner). Full-size sources: `docs/images/banner.png` (README header), `logo.png`.
 - Shipped in v1.0.1.
 
-## Linux (not started)
+## Linux / Steam Frame (branch `linux`, in development)
 
-Not supported: CMake stops on anything but Windows/Android. Plan discussed with the user: a Linux
-"VR edition" AppImage like the Quest APK (the patch script enables Dawn's shared-texture features and
-exports Aurora's symbols), a desktop-Vulkan variant of `interop_vulkan.cpp` (opaque-fd external
-memory instead of AHardwareBuffer; sync-fd or opaque-fd semaphores), a `linux-x86_64` CI target merged
-into the `.dusk`, and testing through WiVRn/ALVR or SteamVR on Linux. Waiting on the user having a
-Linux machine to test on.
+**Live document: `docs/linux.md`.** Baseline target: Steam Frame standalone (SteamOS, arm64); Linux
+PCs come along for free. No VR-edition build needed: the official AppImages export Dawn's internals
+(`-rdynamic`), so `src/interop_linux.cpp` hands OpenXR **Dawn's own Vulkan device**
+(`XR_KHR_vulkan_enable`) and copies into the swapchains on Dawn's queue from Dawn's thread, like the
+D3D12 path on Windows. CI builds `linux-x86_64` and `linux-aarch64`. `VR_STANDALONE`
+(vr_config.hpp) gives the Frame the Quest's mobile defaults.
+
+Dev loop on this machine: WSL Ubuntu 24.04 (`/opt/build/vr` build dir, extracted AppImages under
+`/opt/dl`), llvmpipe made acceptable to Aurora by `tools/linux/fake_gpu_layer.c`. Verified there:
+mod loads on stock 2.0.3, hooks install, stereo simulation renders, copy self-test reads the scene
+through Dawn's queue. Next: real OpenXR session against Monado's simulated HMD, then the Frame.
 
 ## Picking this up again
 
@@ -263,7 +268,7 @@ Linux machine to test on.
    stereo shadows (sections above). Work on a feature branch off `main`, PR/merge back.
 2. Quest: the 1.0 features are Windows-tested only; check them on the headset (x-ray cost with a
    `discard` in every tabletop draw).
-3. Linux: see the Linux section.
+3. Linux / Steam Frame: `docs/linux.md` (branch `linux`).
 4. Windows test: `tools/run_test.ps1` (desktop simulation; `-Headset` for Virtual Desktop). Quest:
    `docs/android.md` device loop; SDK/adb on `F:\Android\sdk`, ROM at
    `/storage/emulated/0/Download/tp-linkle.iso`, app `dev.twilitrealm.dusk.vr`.

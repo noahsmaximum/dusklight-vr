@@ -1,0 +1,14 @@
+{
+    "file_format_version": "1.2.0",
+    "layer": {
+        "name": "VK_LAYER_DUSKLIGHT_fake_gpu",
+        "type": "GLOBAL",
+        "library_path": "./libfake_gpu_layer.so",
+        "api_version": "1.4.0",
+        "implementation_version": "1",
+        "description": "Reports CPU Vulkan devices as integrated GPUs (dev only)",
+        "functions": {
+            "vkGetInstanceProcAddr": "fake_gpu_GetInstanceProcAddr"
+        }
+    }
+}

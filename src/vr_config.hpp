@@ -3,6 +3,14 @@
 #include <cstddef>
 #include <cstdint>
 
+// Standalone headsets: the game renders on the headset's own mobile GPU (Quest/Pico through
+// Android, Steam Frame through SteamOS on arm64), and nobody sees the app's 2D window.
+#if defined(__ANDROID__) || (defined(__linux__) && defined(__aarch64__))
+#define VR_STANDALONE 1
+#else
+#define VR_STANDALONE 0
+#endif
+
 // Persistent user settings (ConfigService vars), cached into plain values each frame so hot paths
 // never call into the service.
 namespace vr {

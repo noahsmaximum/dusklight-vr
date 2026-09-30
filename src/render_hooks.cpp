@@ -113,8 +113,13 @@ DEFINE_HOOK_SYMBOL("dusk::interp::begin_sim_tick", void(), InterpBeginSimTick);
 #ifndef _WIN32
 DEFINE_HOOK_SYMBOL("_ZN4dusk6interp26add_interpolation_callbackEPFvPvES1_", void(InterpCallback, void*),
     InterpAddCallback);
-DEFINE_HOOK_SYMBOL("_ZN4dusk6interp26add_interpolation_callbackEPFvPvES1_NSt6__ndk110shared_ptrIvEE",
-    void(InterpCallback, void*, std::shared_ptr<void>), InterpAddOwnedCallback);
+#ifdef __ANDROID__ // libc++
+#define VR_SYM_ADD_OWNED_CALLBACK "_ZN4dusk6interp26add_interpolation_callbackEPFvPvES1_NSt6__ndk110shared_ptrIvEE"
+#else // libstdc++
+#define VR_SYM_ADD_OWNED_CALLBACK "_ZN4dusk6interp26add_interpolation_callbackEPFvPvES1_St10shared_ptrIvE"
+#endif
+DEFINE_HOOK_SYMBOL(VR_SYM_ADD_OWNED_CALLBACK, void(InterpCallback, void*, std::shared_ptr<void>),
+    InterpAddOwnedCallback);
 #endif
 // View-projection texture matrices (J3D modes 3/9): effect matrix x view x model.
 DEFINE_HOOK_SYMBOL(VR_SYM_CALC_TEX_MTX, void(J3DTexMtx*, const f32 (*)[4]), CalcTexMtx);
@@ -1019,7 +1024,7 @@ void update_efb_override() {
         h = xr::eye_height() & ~1u;
         w = ((h * 4 + 2) / 3) & ~1u;
     }
-#ifdef __ANDROID__
+#if VR_STANDALONE
     // Cinema on a standalone headset: the app window is huge (4128x2208 on a Quest 3) but the
     // virtual screen covers only part of each eye, so render at about what the headset can resolve
     // there: eye pixels across the screen's angular width (typical per-eye tangent span ~2.4), with
@@ -1056,7 +1061,7 @@ void window_size_post(ModContext*, void*, void* retval, void*) {
         auto* size = static_cast<AuroraWindowSize*>(retval);
         size->fb_width = w;
         size->fb_height = h;
-#ifdef __ANDROID__
+#if VR_STANDALONE
         // On a standalone headset nobody sees the app's 2D surface while the session runs, yet every
         // frame Aurora resamples, blits, draws ImGui and sizes RmlUi's target at the surface size
         // (~4K on a Quest 3): a fixed ~15 ms. Configure the surface at the render size instead.

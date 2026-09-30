@@ -8,8 +8,8 @@ project(dusklight_vr VERSION 1.0.1 LANGUAGES C CXX)
 # Full version shown in the mod manager (project() only accepts numeric versions).
 set(MOD_VERSION "1.0.1")
 
-if (NOT WIN32 AND NOT ANDROID)
-    message(FATAL_ERROR "Dusklight VR supports Windows (D3D12) and Android (Vulkan)")
+if (NOT WIN32 AND NOT ANDROID AND NOT CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    message(FATAL_ERROR "Dusklight VR supports Windows (D3D12), Android and Linux (Vulkan)")
 endif ()
 
 # The Dusklight version to build against: a release tag (e.g. "v2.0.1") or a commit SHA.
@@ -36,13 +36,21 @@ FetchContent_MakeAvailable(OpenXR)
 
 configure_file(mod.json.in "${CMAKE_CURRENT_BINARY_DIR}/mod.json" @ONLY NEWLINE_STYLE LF)
 
-# Platform graphics interop: D3D12 on Windows, Vulkan (shared AHardwareBuffers) on Android.
+# Platform graphics interop: D3D12 on Windows, Vulkan (shared AHardwareBuffers) on Android, Dawn's
+# own Vulkan device on Linux.
 if (WIN32)
     set(VR_INTEROP_SOURCES src/interop_d3d12.cpp src/dawn_d3d12.cpp src/d3d12_vtbl.c src/iat_hook.cpp)
 elseif (ANDROID)
     set(VR_INTEROP_SOURCES src/interop_vulkan.cpp src/android_loader.cpp)
 else ()
-    message(FATAL_ERROR "Dusklight VR supports Windows (D3D12) and Android (Vulkan)")
+    set(VR_INTEROP_SOURCES src/interop_linux.cpp)
+    # Vulkan headers only: the mod calls the loader Dawn already opened (no link dependency).
+    FetchContent_Declare(VulkanHeaders
+            GIT_REPOSITORY https://github.com/KhronosGroup/Vulkan-Headers.git
+            GIT_TAG v1.4.321
+            GIT_SHALLOW TRUE
+            EXCLUDE_FROM_ALL)
+    FetchContent_MakeAvailable(VulkanHeaders)
 endif ()
 
 add_mod(dusklight_vr
@@ -63,6 +71,8 @@ add_mod(dusklight_vr
 if (WIN32)
     target_link_libraries(dusklight_vr PRIVATE OpenXR::openxr_loader d3d12 dxgi)
     target_compile_definitions(dusklight_vr PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
-else ()
+elseif (ANDROID)
     target_link_libraries(dusklight_vr PRIVATE OpenXR::openxr_loader android nativewindow vulkan)
+else ()
+    target_link_libraries(dusklight_vr PRIVATE OpenXR::openxr_loader Vulkan::Headers ${CMAKE_DL_LIBS})
 endif ()

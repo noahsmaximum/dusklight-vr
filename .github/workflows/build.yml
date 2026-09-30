@@ -26,6 +26,14 @@ jobs:
           - platform: android-aarch64
             runner: ubuntu-latest
             android_ndk: "29.0.14206865"
+          # Linux (Steam Frame standalone, SteamOS/desktop Linux): OpenXR on Dawn's own Vulkan
+          # device; works with the official AppImages. Built on 24.04, like Dusklight (glibc 2.39).
+          - platform: linux-x86_64
+            runner: ubuntu-24.04
+            linux: true
+          - platform: linux-aarch64
+            runner: ubuntu-24.04-arm
+            linux: true
     steps:
       - uses: actions/checkout@v7
 
@@ -56,10 +64,20 @@ jobs:
         with:
           packages: ndk;${{matrix.android_ndk}}
 
+      - name: Install Linux build tools
+        if: matrix.linux
+        run: |
+          sudo apt-get update
+          # libx11-dev: the OpenXR SDK's configure insists on a presentation backend's headers.
+          sudo apt-get -y install ninja-build clang lld libx11-dev
+
       - name: Configure CMake
         shell: bash
         run: |
           args=(-G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo ${{matrix.cmake_args}})
+          if [[ -n "${{matrix.linux}}" ]]; then
+            args+=(-DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++)
+          fi
           if [[ -n "${{matrix.android_ndk}}" ]]; then
             args+=(-DCMAKE_TOOLCHAIN_FILE="$ANDROID_HOME/ndk/${{matrix.android_ndk}}/build/cmake/android.toolchain.cmake"
                    -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-28)

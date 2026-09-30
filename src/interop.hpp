@@ -15,6 +15,9 @@
 // targets live in AHardwareBuffers shared between Dawn and the Vulkan device OpenXR created, and the
 // copy runs on that device (interop_vulkan.cpp). It needs a Dusklight build that enables Dawn's
 // shared-texture features (see docs/android.md).
+//
+// Linux uses Dawn's Vulkan backend like Windows uses D3D12: OpenXR gets Dawn's own Vulkan device,
+// and the copy runs on Dawn's queue (interop_linux.cpp). Works with the official AppImages.
 namespace vr::interop {
 
 // Opaque per-platform handle of an OpenXR swapchain image (ID3D12Resource* / VkImage).
