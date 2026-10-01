@@ -11,6 +11,18 @@
 2. Copy your Twilight Princess (USA) disc image to the headset (e.g. its `Download` folder).
 3. Launch **Dusklight VR** from the library (Unknown Sources). Dusklight's launch menu shows in the headset: select your disc image there and start the game. It's remembered for later launches.
 
+**Linux / Steam Frame (alpha)**
+1. Get the official Dusklight **v2.0.3** AppImage for your machine: `linux-arm64` on a Steam Frame, `linux-x86_64` on a PC. No special build is needed. Graphics backend: **Vulkan** (the default).
+2. Copy `dusklight_vr.dusk` into `~/.local/share/TwilitRealm/Dusklight/mods`.
+3. With SteamVR (or Monado) running, launch Dusklight and enable **Dusklight VR** in the Mods window.
+4. Not yet tested on a real Steam Frame. If it doesn't go into VR, please share the newest log from `~/.local/share/TwilitRealm/Dusklight/logs/`.
+
+## What's new in 1.1.0-alpha.1
+
+- **Linux and Steam Frame support (alpha)**: the mod now runs on the official Dusklight Linux AppImages (arm64 for the Frame, x86_64 for PCs). Tested with a simulated headset only so far
+- Standalone defaults on the Frame match the Quest (60% render scale)
+- Windows and Quest: no changes. Quest users keep the v1.0.1 APK
+
 ## What's new in 1.0.1
 
 - New mod icon and banner in Dusklight's Mods window
@@ -29,6 +41,8 @@
 - **VR settings window** with tabs (General, View, Tabletop, HUD & menus, Advanced), opened from **VR** in Dusklight's top bar
 
 ## Known issues
+
+- Linux / Steam Frame: alpha. Verified with Monado's simulated headset only; SteamVR on the Frame, performance, controllers and tabletop passthrough are untested
 
 - Quest: the new tabletop features (x-ray, aim lines, quick wheel, Hawkeye screen) are tested on Windows only so far
 - Quest: stereo runs at 36 fps (head rotation is reprojected at 72 Hz); motion-vector frame generation (SpaceWarp) is not in yet

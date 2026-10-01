@@ -37,6 +37,12 @@ a VR app manifest and a few exports the mod needs; it installs beside the offici
 - Dusklight **v2.0**, graphics backend **D3D12** (the default). Other backends: the mod stays idle.
 - Any OpenXR runtime with D3D12 support (SteamVR, Virtual Desktop, Meta Quest Link, WMR, ...).
 
+**Linux / Steam Frame (alpha)**
+- The official Dusklight **v2.0.3** AppImage (`linux-arm64` on a Steam Frame, `linux-x86_64` on a PC),
+  graphics backend **Vulkan** (the default). No special build.
+- An OpenXR runtime with Vulkan support (SteamVR, Monado). Tested with Monado's simulated headset only;
+  see [docs/linux.md](docs/linux.md).
+
 **Quest 3 (standalone)**
 - The `dusklight-vr-edition-arm64.apk` from the release (Dusklight v2.0.1 + VR manifest; the mod is
   bundled inside). Sideloading needs developer mode (SideQuest or `adb install`).
@@ -48,6 +54,9 @@ a VR app manifest and a few exports the mod needs; it installs beside the offici
 **Windows**: copy `dusklight_vr.dusk` into `%APPDATA%\TwilitRealm\Dusklight\mods` and enable it in the
 Mods window. Settings open from **VR** in Dusklight's top bar (or the mod's panel in the Mods window):
 mode, presets, world scale, tabletop, HUD/menu placement, recenter.
+
+**Linux / Steam Frame**: copy `dusklight_vr.dusk` into `~/.local/share/TwilitRealm/Dusklight/mods`,
+start your OpenXR runtime, launch Dusklight and enable the mod in the Mods window.
 
 **Quest 3**: install the APK, copy the disc image to the headset (e.g. its `Download` folder), and
 start **Dusklight VR** from the library (Unknown Sources). Dusklight's launch menu appears on a panel

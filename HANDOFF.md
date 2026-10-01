@@ -3,6 +3,8 @@
 Repo: https://github.com/noahsmaximum/dusklight-vr (local: `C:\Users\Noah\Projects\dusklight-vr`)
 Latest release: **v1.0.1** (Windows + Quest 3; published by CI on tag push, the Quest APK is built by
 the manual "Android VR APK" workflow from the tag and attached with `gh release upload`).
+Latest prerelease: **v1.1.0-alpha.1** from branch `linux` (Linux / Steam Frame alpha; tags containing
+`-` are published as prereleases).
 
 ## Status
 
