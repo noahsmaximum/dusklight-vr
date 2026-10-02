@@ -6,7 +6,7 @@ endif ()
 
 project(dusklight_vr VERSION 1.1.0 LANGUAGES C CXX)
 # Full version shown in the mod manager (project() only accepts numeric versions).
-set(MOD_VERSION "1.1.0-alpha.1")
+set(MOD_VERSION "1.1.0-alpha.2")
 
 if (NOT WIN32 AND NOT ANDROID AND NOT CMAKE_SYSTEM_NAME STREQUAL "Linux")
     message(FATAL_ERROR "Dusklight VR supports Windows (D3D12), Android and Linux (Vulkan)")

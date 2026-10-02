@@ -77,6 +77,18 @@ OpenXR session.
 
   ![Monado simulated HMD showing Dusklight VR](images/linux-monado.png)
 
+## arm64 under emulation (qemu-user)
+
+The official `linux-arm64` AppImage also runs in WSL under qemu-user with Ubuntu's arm64 libraries
+(multiarch from ports.ubuntu.com, llvmpipe arm64, the fake-GPU layer cross-built with
+`aarch64-linux-gnu-gcc`). Very slow, but it reaches the game and caught the alpha.1 crash.
+
+**Inline hooks need room.** On linux-arm64 the `wgpu*` entry points (and `dawn::native::NativeDevice*`)
+are single 4-byte `b` instructions packed back to back. Hooking `wgpuDeviceCreateShaderModule` there
+overwrote `wgpuDeviceCreateTexture`/`wgpuDeviceDestroy`, and ImGui's first texture jumped to 0x200
+(alpha.1 crash on the Frame). Linux now hooks `dawn::native::DeviceBase::APICreateShaderModule`.
+Game and Aurora functions are fine even when tiny: they carry patchable-entry NOPs.
+
 ## WSL notes
 
 - Monado needs a pollable stdin (`tail -f /dev/null | monado-service`) and `XRT_COMPOSITOR_FORCE_XCB=1`

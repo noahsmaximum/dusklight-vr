@@ -17,6 +17,10 @@
 3. With SteamVR (or Monado) running, launch Dusklight and enable **Dusklight VR** in the Mods window.
 4. Not yet tested on a real Steam Frame. If it doesn't go into VR, please share the newest log from `~/.local/share/TwilitRealm/Dusklight/logs/`.
 
+## What's new in 1.1.0-alpha.2
+
+- Fixed: Dusklight crashed (SIGSEGV) at startup on the Steam Frame / arm64 Linux as soon as the mod was installed
+
 ## What's new in 1.1.0-alpha.1
 
 - **Linux and Steam Frame support (alpha)**: the mod now runs on the official Dusklight Linux AppImages (arm64 for the Frame, x86_64 for PCs). Tested with a simulated headset only so far
