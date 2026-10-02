@@ -23,9 +23,16 @@ using CreateShaderModuleFn = WGPUShaderModule (*)(WGPUDevice, const WGPUShaderMo
 DEFINE_HOOK_SYMBOL("extern/aurora/lib/gx/regs.cpp#aurora::gx::fifo::bp_fog0", void(uint8_t, uint32_t), BpFog0);
 DEFINE_HOOK_SYMBOL("extern/aurora/lib/gx/regs.cpp#aurora::gx::fifo::bp_fog3", void(uint8_t, uint32_t), BpFog3);
 
-#ifndef _WIN32
+#if defined(__ANDROID__)
 // Dawn is linked into the game on Android, so its entry point can be hooked like a game function.
 DEFINE_HOOK_SYMBOL("wgpuDeviceCreateShaderModule",
+    WGPUShaderModule(WGPUDevice, const WGPUShaderModuleDescriptor*), CreateShaderModule);
+#elif !defined(_WIN32)
+// Linux: the wgpu* entry points are single-instruction branches packed back to back (4 bytes on
+// arm64), too small for an inline hook: patching one overwrote its neighbours (wgpuDeviceCreateTexture)
+// and crashed on the Steam Frame. Hook the method they branch to instead. The WGPU handles and
+// descriptors are Dawn's native objects and structs, so the signature is the same.
+DEFINE_HOOK_SYMBOL("_ZN4dawn6native10DeviceBase21APICreateShaderModuleEPKNS0_22ShaderModuleDescriptorE",
     WGPUShaderModule(WGPUDevice, const WGPUShaderModuleDescriptor*), CreateShaderModule);
 #endif
 
